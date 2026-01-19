@@ -61,9 +61,12 @@ class DetectedFaceInfo {
 class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
   CameraController? _cameraController;
   bool _isDetecting = false;
+  bool _isCameraPaused = false;
   List<DetectedFaceInfo> _detectedFaces = [];
   Uint8List? _debugLiveFaceBytes;
+  Uint8List? _capturedImageBytes;
   int _cameraIndex = 0;
+  DateTime? _lastRecognitionTime;
 
   final recognition.FaceRecognitionService _recognitionService =
       recognition.FaceRecognitionService();
@@ -131,6 +134,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     _isDetecting = true;
 
     try {
+      // Use original method for ML Kit detection (handles rotation properly)
       final inputImage = _convertCameraImage(cameraImage);
       if (inputImage == null) {
         _isDetecting = false;
@@ -143,117 +147,33 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
       if (_isRecognitionReady &&
           _recognitionService.registeredFaces.isNotEmpty) {
-        final fullImage = _convertCameraImageToImg(cameraImage);
-        if (fullImage != null) {
-          final camera = cameras[_cameraIndex];
-          final sensorOrientation = camera.sensorOrientation;
-
-          for (final face in faces) {
-            // Transform bounding box based on rotation instead of rotating image
-            // ML Kit returns coordinates in upright space, we need to map to raw image space
-            final bbox = face.boundingBox;
-            double left, top, right, bottom;
-            final double imgW = fullImage.width.toDouble();
-            final double imgH = fullImage.height.toDouble();
-
-            // Transform coordinates based on sensor orientation
-            // sensorOrientation tells us how the raw image is rotated relative to upright
-            switch (sensorOrientation) {
-              case 90:
-                // Raw image is rotated 90° CW from upright
-                // ML Kit coords (x,y) in upright -> (y, imgW-x) in raw
-                left = bbox.top;
-                top = imgW - bbox.right;
-                right = bbox.bottom;
-                bottom = imgW - bbox.left;
-                break;
-              case 180:
-                left = imgW - bbox.right;
-                top = imgH - bbox.bottom;
-                right = imgW - bbox.left;
-                bottom = imgH - bbox.top;
-                break;
-              case 270:
-                // Raw image is rotated 270° CW (or 90° CCW) from upright
-                left = imgH - bbox.bottom;
-                top = bbox.left;
-                right = imgH - bbox.top;
-                bottom = bbox.right;
-                break;
-              default: // 0
-                left = bbox.left;
-                top = bbox.top;
-                right = bbox.right;
-                bottom = bbox.bottom;
-            }
-
-            final croppedFace = _recognitionService.cropFace(
-              fullImage,
-              recognition.Rect(
-                left: left,
-                top: top,
-                right: right,
-                bottom: bottom,
-              ),
-            );
-
-            if (croppedFace != null) {
-              // Rotate cropped face to upright orientation for recognition
-              img.Image uprightFace = croppedFace;
-              if (sensorOrientation != 0) {
-                // Rotate the cropped face to make it upright
-                uprightFace = img.copyRotate(croppedFace, angle: sensorOrientation.toDouble());
-              }
-
-              // Flip horizontally for front camera to match gallery selfie orientation
-              if (camera.lensDirection == CameraLensDirection.front) {
-                uprightFace = img.flipHorizontal(uprightFace);
-              }
-
-              // Encode and decode to normalize image format (match gallery image processing)
-              final pngBytes = img.encodePng(uprightFace);
-              final normalizedFace = img.decodeImage(pngBytes);
-
-              // Store debug image for the first face
-              if (currentLiveFaceBytes == null) {
-                currentLiveFaceBytes = pngBytes;
-              }
-
-              if (normalizedFace == null) {
-                debugPrint('Failed to normalize face image');
-                faceInfos.add(DetectedFaceInfo(face: face));
-                continue;
-              }
-
-              debugPrint('Sending face for recognition: ${normalizedFace.width}x${normalizedFace.height}');
-              final result = await _recognitionService.recognizeFace(
-                normalizedFace,
-              );
-              debugPrint('Recognition result: name=${result?.name}, confidence=${result?.confidence}, isMatch=${result?.isMatch}');
-              if (result == null) {
-                debugPrint('Recognition returned null - check if embedding generation failed');
-              }
-              faceInfos.add(
-                DetectedFaceInfo(
-                  face: face,
-                  recognizedName: result?.isMatch == true ? result?.name : null,
-                  confidence: result?.isMatch == true
-                      ? result?.confidence
-                      : null,
-                  bestMatchName: result?.name,
-                  bestMatchScore: result?.confidence,
-                ),
-              );
-            } else {
-              debugPrint('Cropped face is null');
-              faceInfos.add(DetectedFaceInfo(face: face));
-            }
-          }
-        } else {
+        // Debounce: only perform recognition every 500ms to avoid freezing
+        final now = DateTime.now();
+        if (_lastRecognitionTime != null &&
+            now.difference(_lastRecognitionTime!) <
+                const Duration(milliseconds: 500)) {
+          // Skip recognition, but still update face boxes for UI
           for (final face in faces) {
             faceInfos.add(DetectedFaceInfo(face: face));
           }
+
+          if (mounted) {
+            setState(() {
+              _detectedFaces = faceInfos;
+              _debugLiveFaceBytes = currentLiveFaceBytes;
+            });
+          }
+          _isDetecting = false;
+          return;
         }
+        _lastRecognitionTime = now;
+
+        // For realtime, we need to skip recognition and rely on capture button
+        // The coordinate transformations are too complex for real-time
+        debugPrint(
+          'Realtime recognition skipped - use Capture button for accurate results',
+        );
+        faceInfos.addAll(faces.map((face) => DetectedFaceInfo(face: face)));
       } else {
         for (final face in faces) {
           faceInfos.add(DetectedFaceInfo(face: face));
@@ -271,6 +191,38 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     }
 
     _isDetecting = false;
+  }
+
+  img.Image? _convertCameraImageToUpright(CameraImage cameraImage) {
+    try {
+      final camera = cameras[_cameraIndex];
+      final sensorOrientation = camera.sensorOrientation;
+      final isFrontCamera = camera.lensDirection == CameraLensDirection.front;
+
+      // Convert to image first
+      final rawImage = _convertCameraImageToImg(cameraImage);
+      if (rawImage == null) return null;
+
+      // Rotate image to upright based on sensor orientation
+      img.Image uprightImage = rawImage;
+      if (sensorOrientation != 0) {
+        // Rotate counter-clockwise to make it upright
+        uprightImage = img.copyRotate(
+          rawImage,
+          angle: sensorOrientation.toDouble(),
+        );
+      }
+
+      // Flip horizontally for front camera to match mirror behavior
+      if (isFrontCamera) {
+        uprightImage = img.flipHorizontal(uprightImage);
+      }
+
+      return uprightImage;
+    } catch (e) {
+      debugPrint('Error converting camera image to upright: $e');
+      return null;
+    }
   }
 
   img.Image? _convertCameraImageToImg(CameraImage cameraImage) {
@@ -473,6 +425,140 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     }
 
     return nv21;
+  }
+
+  Future<void> _captureAndRecognize() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return;
+    }
+
+    // Pause camera stream
+    await _cameraController!.stopImageStream();
+    setState(() {
+      _isCameraPaused = true;
+    });
+
+    try {
+      // Capture image
+      final XFile? capturedFile = await _cameraController!.takePicture();
+      if (capturedFile == null) {
+        _showSnackBar('Failed to capture image');
+        await _resumeCamera();
+        return;
+      }
+
+      // Read captured image
+      final bytes = await capturedFile.readAsBytes();
+
+      // Process captured image
+      final image = img.decodeImage(bytes);
+      if (image == null) {
+        _showSnackBar('Could not decode captured image');
+        return;
+      }
+
+      // Flip captured image horizontally for front camera to match mirror behavior
+      img.Image displayImage = image;
+      final isFrontCamera =
+          cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
+      if (isFrontCamera) {
+        displayImage = img.flipHorizontal(image);
+      }
+
+      // Update state with flipped image for display
+      setState(() {
+        _capturedImageBytes = img.encodePng(displayImage);
+      });
+
+      // Detect face in captured image
+      final inputImage = InputImage.fromFilePath(capturedFile.path);
+      final faces = await _faceDetector.processImage(inputImage);
+
+      if (faces.isEmpty) {
+        _showSnackBar('No face detected in captured image');
+        return;
+      }
+
+      // Find largest face
+      Face? largestFace;
+      double maxArea = 0;
+      for (final face in faces) {
+        final area = face.boundingBox.width * face.boundingBox.height;
+        if (area > maxArea) {
+          maxArea = area;
+          largestFace = face;
+        }
+      }
+
+      if (largestFace == null) {
+        _showSnackBar('Could not find face in image');
+        return;
+      }
+
+      // Crop face from captured image
+      final croppedFace = _recognitionService.cropFace(
+        image,
+        recognition.Rect(
+          left: largestFace.boundingBox.left,
+          top: largestFace.boundingBox.top,
+          right: largestFace.boundingBox.right,
+          bottom: largestFace.boundingBox.bottom,
+        ),
+      );
+
+      if (croppedFace == null) {
+        _showSnackBar('Could not crop face from image');
+        return;
+      }
+
+      // Recognize face
+      if (_recognitionService.registeredFaces.isNotEmpty) {
+        final result = await _recognitionService.recognizeFace(croppedFace);
+
+        // Update detected faces with recognition result
+        final List<DetectedFaceInfo> faceInfos = [];
+        faceInfos.add(
+          DetectedFaceInfo(
+            face: largestFace,
+            recognizedName: result?.isMatch == true ? result?.name : null,
+            confidence: result?.isMatch == true ? result?.confidence : null,
+            bestMatchName: result?.name,
+            bestMatchScore: result?.confidence,
+          ),
+        );
+
+        setState(() {
+          _detectedFaces = faceInfos;
+        });
+
+        if (result != null && result.isMatch) {
+          _showSnackBar(
+            'Matched: ${result.name} (${(result.confidence * 100).toStringAsFixed(1)}%)',
+          );
+        } else {
+          _showSnackBar('No match found');
+        }
+      } else {
+        _showSnackBar('No registered faces to compare');
+      }
+    } catch (e) {
+      debugPrint('Error capturing and recognizing: $e');
+      _showSnackBar('Error during capture');
+    }
+  }
+
+  Future<void> _resumeCamera() async {
+    if (_cameraController == null) return;
+
+    try {
+      await _cameraController!.startImageStream(_processCameraImage);
+      setState(() {
+        _isCameraPaused = false;
+        _capturedImageBytes = null;
+      });
+    } catch (e) {
+      debugPrint('Error resuming camera: $e');
+    }
   }
 
   Future<void> _registerFaceFromGallery() async {
@@ -710,10 +796,29 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         ],
       ),
       body: _buildBody(),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
-        icon: const Icon(Icons.add_a_photo),
-        label: const Text('Register Face'),
+      floatingActionButton: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          if (_isCameraPaused)
+            FloatingActionButton.extended(
+              onPressed: _resumeCamera,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Resume'),
+              backgroundColor: Colors.orange,
+            )
+          else
+            FloatingActionButton.extended(
+              onPressed: _isRecognitionReady ? _captureAndRecognize : null,
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Capture'),
+            ),
+          const SizedBox(width: 16),
+          FloatingActionButton.extended(
+            onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
+            icon: const Icon(Icons.add_a_photo),
+            label: const Text('Register'),
+          ),
+        ],
       ),
     );
   }
@@ -773,9 +878,51 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
             ),
           ),
         ),
+        // Display captured image when camera is paused
+        if (_capturedImageBytes != null && _isCameraPaused)
+          Container(
+            color: Colors.black87,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Captured Image',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white, width: 3),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(
+                        _capturedImageBytes!,
+                        width: 300,
+                        height: 300,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Tap "Resume" to continue',
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
         // Display Registered Face Thumbnail for Debugging
         if (_recognitionService.registeredFaces.isNotEmpty &&
-            _recognitionService.registeredFaces.first.faceBytes != null)
+            _recognitionService.registeredFaces.first.faceBytes != null &&
+            !_isCameraPaused)
           Positioned(
             top: 20,
             right: 20,
@@ -790,7 +937,10 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
                   ),
                   child: Column(
                     children: [
-                      const Text('Registered', style: TextStyle(color: Colors.white, fontSize: 10)),
+                      const Text(
+                        'Registered',
+                        style: TextStyle(color: Colors.white, fontSize: 10),
+                      ),
                       const SizedBox(height: 4),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(4),
@@ -803,14 +953,18 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
                       ),
                       Text(
                         _recognitionService.registeredFaces.first.name,
-                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ],
                   ),
                 ),
                 if (_debugLiveFaceBytes != null) ...[
                   const SizedBox(height: 10),
-                   Container(
+                  Container(
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
                       color: Colors.black54,
@@ -819,7 +973,10 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
                     ),
                     child: Column(
                       children: [
-                        const Text('Live Input', style: TextStyle(color: Colors.white, fontSize: 10)),
+                        const Text(
+                          'Live Input',
+                          style: TextStyle(color: Colors.white, fontSize: 10),
+                        ),
                         const SizedBox(height: 4),
                         ClipRRect(
                           borderRadius: BorderRadius.circular(4),
@@ -832,17 +989,21 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
                         ),
                         const Text(
                           'Model Input',
-                          style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ],
                     ),
                   ),
-                ]
+                ],
               ],
             ),
           ),
-        ],
-      );
+      ],
+    );
   }
 }
 
@@ -933,10 +1094,10 @@ class FacePainter extends CustomPainter {
 
       // Draw Name & Confidence
       final String label = info.recognizedName ?? 'Unknown';
-      final String score = info.bestMatchScore != null 
-          ? '(${(info.bestMatchScore! * 100).toStringAsFixed(1)}%)' 
+      final String score = info.bestMatchScore != null
+          ? '(${(info.bestMatchScore! * 100).toStringAsFixed(1)}%)'
           : '';
-      
+
       final textSpan = TextSpan(
         text: '$label $score',
         style: const TextStyle(
@@ -952,13 +1113,18 @@ class FacePainter extends CustomPainter {
       );
 
       textPainter.layout();
-      
+
       final double textX = left;
       final double textY = top - 30; // Above the box
 
       // Draw background for text
       canvas.drawRect(
-        Rect.fromLTWH(textX - 5, textY - 5, textPainter.width + 10, textPainter.height + 10),
+        Rect.fromLTWH(
+          textX - 5,
+          textY - 5,
+          textPainter.width + 10,
+          textPainter.height + 10,
+        ),
         textBgPaint,
       );
 
