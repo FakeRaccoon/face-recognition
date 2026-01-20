@@ -681,17 +681,24 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
   }
 
   Future<void> _registerFaceFromGallery() async {
+    // Pause camera stream during registration
+    await _cameraController?.stopImageStream();
+
     try {
       final XFile? pickedFile = await _imagePicker.pickImage(
         source: ImageSource.gallery,
       );
 
-      if (pickedFile == null) return;
+      if (pickedFile == null) {
+        await _resumeCamera();
+        return;
+      }
 
       final bytes = await pickedFile.readAsBytes();
       final image = img.decodeImage(bytes);
       if (image == null) {
         _showSnackBar('Could not decode image');
+        await _resumeCamera();
         return;
       }
 
@@ -701,6 +708,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
       if (faces.isEmpty) {
         _showSnackBar('No face detected in the image');
+        await _resumeCamera();
         return;
       }
 
@@ -708,6 +716,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         _showSnackBar(
           'Multiple faces detected. Please select an image with one face.',
         );
+        await _resumeCamera();
         return;
       }
 
@@ -724,12 +733,16 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
       if (croppedFace == null) {
         _showSnackBar('Could not crop face from image');
+        await _resumeCamera();
         return;
       }
 
       // Show dialog to enter name
       final name = await _showNameInputDialog();
-      if (name == null || name.isEmpty) return;
+      if (name == null || name.isEmpty) {
+        await _resumeCamera();
+        return;
+      }
 
       // Limit to 1 face: Clear existing before registering new
       _recognitionService.clearAllFaces();
@@ -740,6 +753,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     } catch (e) {
       log('Error registering face: $e');
       _showSnackBar('Error registering face');
+    } finally {
+      await _resumeCamera();
     }
   }
 
@@ -855,7 +870,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid
-          ? ImageFormatGroup.yuv420
+          ? ImageFormatGroup.nv21
           : ImageFormatGroup.bgra8888,
     );
 
@@ -865,6 +880,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       if (mounted) {
         setState(() {
           _detectedFaces = [];
+          _lastRecognitionTime = null; // Reset debounce timer
         });
       }
     } catch (e) {
