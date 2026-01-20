@@ -1,5 +1,5 @@
-import 'dart:math';
-import 'package:flutter/foundation.dart';
+import 'dart:developer' show log;
+import 'dart:math' hide log;
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:typed_data';
@@ -39,7 +39,8 @@ class RecognitionResult {
 class FaceRecognitionService {
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
   static const int _inputSize = 112;
-  static const double _threshold = 0.5; // Standard threshold for face matching
+  static const double _threshold = 0.6;
+  static const int _minFaceSize = 50;
 
   Interpreter? _interpreter;
   List<int>? _outputShape;
@@ -56,11 +57,11 @@ class FaceRecognitionService {
       // Get actual output shape from the model
       final outputTensor = _interpreter!.getOutputTensor(0);
       _outputShape = outputTensor.shape;
-      debugPrint('MobileFaceNet model loaded successfully');
-      debugPrint('Input shape: ${_interpreter!.getInputTensor(0).shape}');
-      debugPrint('Output shape: $_outputShape');
+      log('MobileFaceNet model loaded successfully');
+      log('Input shape: ${_interpreter!.getInputTensor(0).shape}');
+      log('Output shape: $_outputShape');
     } catch (e) {
-      debugPrint('Error loading MobileFaceNet model: $e');
+      log('Error loading MobileFaceNet model: $e');
       rethrow;
     }
   }
@@ -79,7 +80,7 @@ class FaceRecognitionService {
 
   Future<List<double>?> getEmbedding(img.Image faceImage) async {
     if (_interpreter == null) {
-      debugPrint('Interpreter not initialized');
+      log('Interpreter not initialized');
       return null;
     }
 
@@ -98,21 +99,25 @@ class FaceRecognitionService {
       final embedding = output[0];
       final normalized = _normalizeEmbedding(embedding);
 
-      debugPrint('Generated embedding with ${normalized.length} dimensions');
+      log('Generated embedding with ${normalized.length} dimensions');
       return normalized;
     } catch (e) {
-      debugPrint('Error getting embedding: $e');
+      log('Error getting embedding: $e');
       return null;
     }
   }
 
   List<List<List<List<double>>>> _preprocessImage(img.Image image) {
-    // Resize to 112x112
+    // Step 1: Resize to 112x112 using Lanczos interpolation for better quality
     final resized = img.copyResize(
       image,
       width: _inputSize,
       height: _inputSize,
+      interpolation: img.Interpolation.cubic,
     );
+
+    // Step 2: Apply contrast enhancement (histogram equalization on luminance)
+    final enhanced = _enhanceContrast(resized);
 
     // Create input tensor [1, 112, 112, 3]
     final input = List.generate(
@@ -120,7 +125,7 @@ class FaceRecognitionService {
       (_) => List.generate(
         _inputSize,
         (y) => List.generate(_inputSize, (x) {
-          final pixel = resized.getPixel(x, y);
+          final pixel = enhanced.getPixel(x, y);
           // Normalize to [-1, 1]
           return [
             (pixel.r.toDouble() - 127.5) / 127.5,
@@ -132,6 +137,83 @@ class FaceRecognitionService {
     );
 
     return input;
+  }
+
+  /// Apply adaptive contrast enhancement to improve face feature visibility
+  img.Image _enhanceContrast(img.Image image) {
+    // Convert to grayscale for histogram calculation
+    final int width = image.width;
+    final int height = image.height;
+
+    // Calculate luminance histogram
+    final histogram = List.filled(256, 0);
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
+        final pixel = image.getPixel(x, y);
+        final luminance = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b)
+            .round();
+        histogram[luminance.clamp(0, 255)]++;
+      }
+    }
+
+    // Calculate cumulative distribution function (CDF)
+    final cdf = List.filled(256, 0);
+    cdf[0] = histogram[0];
+    for (int i = 1; i < 256; i++) {
+      cdf[i] = cdf[i - 1] + histogram[i];
+    }
+
+    // Find min non-zero CDF value
+    int cdfMin = 0;
+    for (int i = 0; i < 256; i++) {
+      if (cdf[i] > 0) {
+        cdfMin = cdf[i];
+        break;
+      }
+    }
+
+    final totalPixels = width * height;
+    final denominator = totalPixels - cdfMin;
+    if (denominator <= 0) return image;
+
+    // Create lookup table for histogram equalization
+    final lut = List.filled(256, 0);
+    for (int i = 0; i < 256; i++) {
+      lut[i] = (((cdf[i] - cdfMin) * 255) / denominator).round().clamp(0, 255);
+    }
+
+    // Apply equalization with blending (50% original, 50% equalized)
+    // This prevents over-enhancement
+    final result = img.Image(width: width, height: height);
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
+        final pixel = image.getPixel(x, y);
+        final r = pixel.r.toInt();
+        final g = pixel.g.toInt();
+        final b = pixel.b.toInt();
+
+        // Calculate luminance ratio
+        final oldLum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(
+          0,
+          255,
+        );
+        final newLum = lut[oldLum];
+
+        if (oldLum > 0) {
+          final ratio = newLum / oldLum;
+          // Blend 60% original, 40% enhanced for subtle improvement
+          final blendRatio = 0.6 + 0.4 * ratio;
+          final newR = (r * blendRatio).round().clamp(0, 255);
+          final newG = (g * blendRatio).round().clamp(0, 255);
+          final newB = (b * blendRatio).round().clamp(0, 255);
+          result.setPixelRgb(x, y, newR, newG, newB);
+        } else {
+          result.setPixelRgb(x, y, r, g, b);
+        }
+      }
+    }
+
+    return result;
   }
 
   List<double> _normalizeEmbedding(List<double> embedding) {
@@ -150,7 +232,7 @@ class FaceRecognitionService {
 
   double _cosineSimilarity(List<double> a, List<double> b) {
     if (a.length != b.length) {
-      debugPrint('Embedding size mismatch: ${a.length} vs ${b.length}');
+      log('Embedding size mismatch: ${a.length} vs ${b.length}');
       return 0;
     }
 
@@ -175,11 +257,9 @@ class FaceRecognitionService {
       _registeredFaces.add(
         RegisteredFace(name: name, embedding: embedding, faceBytes: faceBytes),
       );
-      debugPrint(
-        'Registered face for: $name (embedding size: ${embedding.length})',
-      );
+      log('Registered face for: $name (embedding size: ${embedding.length})');
     } else {
-      debugPrint('Failed to get embedding for: $name');
+      log('Failed to get embedding for: $name');
     }
   }
 
@@ -193,13 +273,13 @@ class FaceRecognitionService {
 
   Future<RecognitionResult?> recognizeFace(img.Image faceImage) async {
     if (_registeredFaces.isEmpty) {
-      debugPrint('No registered faces to compare');
+      log('No registered faces to compare');
       return null;
     }
 
     final embedding = await getEmbedding(faceImage);
     if (embedding == null) {
-      debugPrint('Failed to get embedding for recognition');
+      log('Failed to get embedding for recognition');
       return null;
     }
 
@@ -208,7 +288,7 @@ class FaceRecognitionService {
 
     for (final registered in _registeredFaces) {
       final similarity = _cosineSimilarity(embedding, registered.embedding);
-      debugPrint(
+      log(
         'Similarity with ${registered.name}: ${similarity.toStringAsFixed(3)}',
       );
 
@@ -218,7 +298,7 @@ class FaceRecognitionService {
       }
     }
 
-    debugPrint(
+    log(
       'Best match: $bestMatch with similarity: ${bestSimilarity.toStringAsFixed(3)} (threshold: $_threshold)',
     );
 
@@ -260,12 +340,15 @@ class FaceRecognitionService {
       final croppedWidth = right - left;
       final croppedHeight = bottom - top;
 
-      if (croppedWidth <= 10 || croppedHeight <= 10) {
-        debugPrint('Cropped face too small: ${croppedWidth}x$croppedHeight');
+      // Enforce minimum face size for reliable recognition
+      if (croppedWidth < _minFaceSize || croppedHeight < _minFaceSize) {
+        log(
+          'Face too small for reliable recognition: ${croppedWidth}x$croppedHeight (min: $_minFaceSize)',
+        );
         return null;
       }
 
-      debugPrint(
+      log(
         'Cropping face: ($left, $top) to ($right, $bottom) size: ${croppedWidth}x$croppedHeight',
       );
 
@@ -277,7 +360,7 @@ class FaceRecognitionService {
         height: croppedHeight,
       );
     } catch (e) {
-      debugPrint('Error cropping face: $e');
+      log('Error cropping face: $e');
       return null;
     }
   }

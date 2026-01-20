@@ -1,3 +1,4 @@
+import 'dart:developer' show log;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -86,7 +87,7 @@ class _FaceComparisonScreenState extends State<FaceComparisonScreen> {
         _similarityScore = null; // Reset result on new image
       });
     } catch (e) {
-      debugPrint('Error picking image: $e');
+      log('Error picking image: $e');
       if (mounted) _showSnackBar('Error picking image');
     }
   }
@@ -107,7 +108,7 @@ class _FaceComparisonScreenState extends State<FaceComparisonScreen> {
         _similarityScore = score;
       });
     } catch (e) {
-      debugPrint('Error comparing faces: $e');
+      log('Error comparing faces: $e');
       if (mounted) _showSnackBar('Error comparing faces');
     } finally {
       setState(() {
@@ -205,7 +206,7 @@ class _FaceComparisonScreenState extends State<FaceComparisonScreen> {
                             ?.copyWith(
                               color:
                                   _similarityScore! >
-                                      0.4 // Using standard threshold
+                                      0.45 // Using standard threshold
                                   ? Colors.green
                                   : Colors.red,
                               fontWeight: FontWeight.bold,
@@ -213,10 +214,10 @@ class _FaceComparisonScreenState extends State<FaceComparisonScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        _similarityScore! > 0.4 ? 'MATCH' : 'NO MATCH',
+                        _similarityScore! > 0.45 ? 'MATCH' : 'NO MATCH',
                         style: Theme.of(context).textTheme.headlineSmall
                             ?.copyWith(
-                              color: _similarityScore! > 0.4
+                              color: _similarityScore! > 0.45
                                   ? Colors.green
                                   : Colors.red,
                               fontWeight: FontWeight.bold,
