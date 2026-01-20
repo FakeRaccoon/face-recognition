@@ -7,9 +7,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_picker/image_picker.dart';
-import 'services/face_recognition_service.dart' as recognition;
+
+import 'package:face_detection/services/face_recognition_service.dart'
+    as recognition;
 import 'verified_screen.dart';
+import 'registration_screen.dart';
 
 List<CameraDescription> cameras = [];
 
@@ -31,7 +33,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const FaceDetectionScreen(),
+      home: const RegistrationScreen(),
     );
   }
 }
@@ -70,7 +72,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
   final recognition.FaceRecognitionService _recognitionService =
       recognition.FaceRecognitionService();
-  final ImagePicker _imagePicker = ImagePicker();
+
   bool _isRecognitionReady = false;
 
   // Verification state
@@ -539,124 +541,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     }
   }
 
-  Future<void> _registerFaceFromGallery() async {
-    // Pause camera stream during registration
-    await _cameraController?.stopImageStream();
-
-    try {
-      final XFile? pickedFile = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-      );
-
-      if (pickedFile == null) {
-        await _resumeCamera();
-        return;
-      }
-
-      final bytes = await pickedFile.readAsBytes();
-      final image = await compute(decodeImageIsolate, bytes);
-      if (image == null) {
-        _showSnackBar('Could not decode image');
-        await _resumeCamera();
-        return;
-      }
-
-      // Detect face in the selected image
-      final inputImage = InputImage.fromFilePath(pickedFile.path);
-      final faces = await _faceDetector.processImage(inputImage);
-
-      if (faces.isEmpty) {
-        _showSnackBar('No face detected in the image');
-        await _resumeCamera();
-        return;
-      }
-
-      if (faces.length > 1) {
-        _showSnackBar(
-          'Multiple faces detected. Please select an image with one face.',
-        );
-        await _resumeCamera();
-        return;
-      }
-
-      final face = faces.first;
-      final croppedFace = _recognitionService.cropFace(
-        image,
-        recognition.Rect(
-          left: face.boundingBox.left,
-          top: face.boundingBox.top,
-          right: face.boundingBox.right,
-          bottom: face.boundingBox.bottom,
-        ),
-      );
-
-      if (croppedFace == null) {
-        _showSnackBar('Could not crop face from image');
-        await _resumeCamera();
-        return;
-      }
-
-      // Show dialog to enter name
-      final name = await _showNameInputDialog();
-      if (name == null || name.isEmpty) {
-        await _resumeCamera();
-        return;
-      }
-
-      // Limit to 1 face: Clear existing before registering new
-      _recognitionService.clearAllFaces();
-
-      await _recognitionService.registerFace(name, croppedFace);
-      _showSnackBar('Face registered for $name');
-      setState(() {});
-    } catch (e) {
-      log('Error registering face: $e');
-      _showSnackBar('Error registering face');
-    } finally {
-      await _resumeCamera();
-    }
-  }
-
-  Future<String?> _showNameInputDialog() async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Register Face'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Enter name',
-            hintText: 'e.g., John',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Register'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
-    );
-  }
-
   @override
   void dispose() {
     _animationController.dispose();
     _cameraController?.dispose();
     _faceDetector.close();
-    _recognitionService.dispose();
+
     super.dispose();
   }
 
@@ -681,12 +571,14 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     }
 
     return Scaffold(
-      backgroundColor: Colors.white,
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
-        icon: const Icon(Icons.add_a_photo),
-        label: const Text('Register'),
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: BackButton(color: Colors.black), // Ensure visibility
       ),
+      backgroundColor: Colors.white,
+
       body: SafeArea(
         child: SizedBox(
           width: double.infinity,

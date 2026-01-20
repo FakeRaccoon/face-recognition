@@ -37,6 +37,15 @@ class RecognitionResult {
 }
 
 class FaceRecognitionService {
+  static final FaceRecognitionService _instance =
+      FaceRecognitionService._internal();
+
+  factory FaceRecognitionService() {
+    return _instance;
+  }
+
+  FaceRecognitionService._internal();
+
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
   static const int _inputSize = 112;
   static const double _threshold = 0.6;
