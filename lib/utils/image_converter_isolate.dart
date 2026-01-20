@@ -165,3 +165,12 @@ int _yuv2rgb(int y, int u, int v, int channel) {
   if (channel == 1) return g;
   return b;
 }
+
+/// Function to be run in an Isolate for decoding images
+img.Image? decodeImageIsolate(Uint8List bytes) {
+  try {
+    return img.decodeImage(bytes);
+  } catch (e) {
+    return null;
+  }
+}

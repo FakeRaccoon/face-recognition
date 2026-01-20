@@ -248,8 +248,27 @@ class FaceRecognitionService {
   Future<void> registerFace(String name, img.Image faceImage) async {
     final embedding = await getEmbedding(faceImage);
     if (embedding != null) {
-      // Remove existing registration with same name
-      _registeredFaces.removeWhere((f) => f.name == name);
+      // Check if this face is already registered (by similarity)
+      // If found, we'll remove the old one and replace it with this new one
+      // effectively updating the registration.
+      List<String> facesToRemove = [];
+
+      // 1. Check for same name (explicit update)
+      facesToRemove.add(name);
+
+      // 2. Check for high similarity (implicit update/deduplication)
+      for (final face in _registeredFaces) {
+        final similarity = _cosineSimilarity(embedding, face.embedding);
+        if (similarity > _threshold) {
+          log(
+            'Found existing face "${face.name}" with similarity ${similarity.toStringAsFixed(3)}. Updating...',
+          );
+          facesToRemove.add(face.name);
+        }
+      }
+
+      // Remove duplicates
+      _registeredFaces.removeWhere((f) => facesToRemove.contains(f.name));
 
       // Encode image for display
       final faceBytes = img.encodePng(faceImage);

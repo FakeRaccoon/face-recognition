@@ -554,7 +554,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       }
 
       final bytes = await pickedFile.readAsBytes();
-      final image = img.decodeImage(bytes);
+      final image = await compute(decodeImageIsolate, bytes);
       if (image == null) {
         _showSnackBar('Could not decode image');
         await _resumeCamera();
