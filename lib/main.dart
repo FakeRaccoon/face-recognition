@@ -503,7 +503,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     } else if (_isVerificationComplete && _consistentlyMatchedName != null) {
       statusText = 'Verified: $_consistentlyMatchedName';
     } else if (_currentConfidence != null && _currentConfidence! >= 0.60) {
-      statusText = 'Verifying: ${_consistentlyMatchedName ?? "User"}';
+      statusText = 'Verifying...';
     } else if (_currentConfidence != null && _currentConfidence! < 0.60) {
       statusText = 'Can not find similarity with registered face';
     } else {
@@ -576,7 +576,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                     ),
                   ),
                 ),
-                if (_consistentlyMatchedName != null) ...[
+                if (_consistentlyMatchedName != null &&
+                    !_isVerificationComplete) ...[
                   const SizedBox(height: 20),
                   CircularProgressIndicator(
                     value: _animationController.value,

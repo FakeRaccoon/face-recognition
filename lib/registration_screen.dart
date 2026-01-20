@@ -106,7 +106,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       if (mounted) {
         final name = await _showNameInputDialog();
         if (name != null && name.isNotEmpty) {
-          _recognitionService.clearAllFaces();
+          // _recognitionService.clearAllFaces(); // Removed to allow multiple
           await _recognitionService.registerFace(name, croppedFace);
           setState(() {
             _isRegistered = true;
@@ -162,50 +162,134 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final registeredFaces = _recognitionService.registeredFaces;
+
     return Scaffold(
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(
-                Icons.face_retouching_natural,
-                size: 100,
-                color: Colors.deepPurple,
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 48),
+                      const Icon(
+                        Icons.face_retouching_natural,
+                        size: 80,
+                        color: Colors.deepPurple,
+                      ),
+                      const SizedBox(height: 24),
+                      const Text(
+                        'Face Registration',
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Register one or more faces to recognize.',
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 32),
+
+                      if (registeredFaces.isNotEmpty) ...[
+                        const Text(
+                          'Registered Faces:',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: registeredFaces.length,
+                          itemBuilder: (context, index) {
+                            final face = registeredFaces[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                leading: face.faceBytes != null
+                                    ? ClipOval(
+                                        child: Image.memory(
+                                          face.faceBytes!,
+                                          width: 50,
+                                          height: 50,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      )
+                                    : const CircleAvatar(
+                                        backgroundColor:
+                                            Colors.deepPurpleAccent,
+                                        child: Icon(
+                                          Icons.person,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                title: Text(
+                                  face.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(
+                                    Icons.delete,
+                                    color: Colors.red,
+                                  ),
+                                  onPressed: () {
+                                    _recognitionService.removeFace(face.name);
+                                    setState(() {
+                                      _isRegistered = _recognitionService
+                                          .registeredFaces
+                                          .isNotEmpty;
+                                    });
+                                  },
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 24),
+                      ],
+                    ],
+                  ),
+                ),
               ),
-              const SizedBox(height: 32),
-              const Text(
-                'Welcome',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Please register a face to continue to the recognition screen.',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
-                textAlign: TextAlign.center,
-              ),
-              const Spacer(),
+
               if (_isLoading)
                 const Center(child: CircularProgressIndicator())
               else
-                FilledButton.icon(
-                  onPressed: _registerFace,
-                  icon: const Icon(Icons.add_a_photo),
-                  label: const Text('Register Face from Gallery'),
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _registerFace,
+                      icon: const Icon(Icons.add_a_photo),
+                      label: const Text('Register New Face'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (_isRegistered)
+                      OutlinedButton(
+                        onPressed: _navigateToFaceDetection,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Start Recognition'),
+                      ),
+                  ],
                 ),
-              const SizedBox(height: 16),
-              if (_isRegistered)
-                FilledButton(
-                  onPressed: _navigateToFaceDetection,
-                  child: const Text('Start Recognition'),
-                ),
-              const Spacer(),
             ],
           ),
         ),
