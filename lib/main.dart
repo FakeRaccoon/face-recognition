@@ -10,7 +10,7 @@ import 'package:image/image.dart' as img;
 
 import 'package:face_detection/services/face_recognition_service.dart'
     as recognition;
-import 'verified_screen.dart';
+
 import 'registration_screen.dart';
 
 List<CameraDescription> cameras = [];
@@ -69,6 +69,11 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   int _cameraIndex = 0;
   DateTime? _lastRecognitionTime;
   double? _currentConfidence;
+
+  // Painting state
+  Rect? _faceBoundingBox;
+  Size? _imageSize;
+  InputImageRotation? _imageRotation;
 
   final recognition.FaceRecognitionService _recognitionService =
       recognition.FaceRecognitionService();
@@ -152,69 +157,57 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         return;
       }
 
-      // Stop processing if already verified
-      if (_isVerificationComplete) {
-        _isDetecting = false;
-        return;
-      }
+      // Stop processing blocking removed to allow continuous tracking
+      // if (_isVerificationComplete) { ... }
 
       final faces = await _faceDetector.processImage(inputImage);
+
+      // Select the largest face if multiple are detected
+      Face? primaryFace;
+      if (faces.isNotEmpty) {
+        primaryFace = faces.reduce(
+          (a, b) =>
+              (a.boundingBox.width * a.boundingBox.height) >
+                  (b.boundingBox.width * b.boundingBox.height)
+              ? a
+              : b,
+        );
+      }
+
       final List<DetectedFaceInfo> faceInfos = [];
 
-      if (_isRecognitionReady &&
-          _recognitionService.registeredFaces.isNotEmpty) {
-        // Debounce: only perform recognition every 500ms to avoid freezing
-        final now = DateTime.now();
-        if (_lastRecognitionTime != null &&
-            now.difference(_lastRecognitionTime!) <
-                const Duration(milliseconds: 500)) {
-          // Skip recognition, keep previous results to avoid flickering
-          _isDetecting = false;
-          return;
-        }
-        _lastRecognitionTime = now;
+      // Update UI state for painting
+      if (mounted) {
+        setState(() {
+          _imageSize = inputImage.metadata?.size;
+          _imageRotation = inputImage.metadata?.rotation;
+          _faceBoundingBox = primaryFace?.boundingBox;
+        });
+      }
 
-        // Get camera info for debug
-        final camera = cameras[_cameraIndex];
-        final sensorOrientation = camera.sensorOrientation;
-        final isFrontCamera = camera.lensDirection == CameraLensDirection.front;
+      if (primaryFace != null) {
+        if (_isRecognitionReady &&
+            _recognitionService.registeredFaces.isNotEmpty) {
+          // Debounce: only perform recognition every 500ms to avoid freezing
+          final now = DateTime.now();
+          if (_lastRecognitionTime != null &&
+              now.difference(_lastRecognitionTime!) <
+                  const Duration(milliseconds: 500)) {
+            // Skip recognition, keep previous results to avoid flickering
+            _isDetecting = false;
+            return;
+          }
+          _lastRecognitionTime = now;
 
-        log('\n=== REALTIME DEBUG ===');
-        log('┌─ Camera Info ─────────────');
-        log('│ Sensor orientation: $sensorOrientation°');
-        log('│ Front camera: $isFrontCamera');
-        log('│ Raw image: ${cameraImage.width}×${cameraImage.height}');
-        log('│ Preview size: ${_cameraController!.value.previewSize}');
-        log('└──────────────────────────');
+          // Convert raw camera frame to upright image FIRST
+          final uprightImage = await _convertCameraImageToUpright(cameraImage);
+          if (uprightImage == null) {
+            _isDetecting = false;
+            return;
+          }
 
-        log('┌─ Face Detection ───────────');
-        log('│ Faces detected: ${faces.length}');
-        if (faces.isNotEmpty) {
-          final bbox = faces[0].boundingBox;
-          log(
-            '│ Face bbox: L=${bbox.left.toInt()}, T=${bbox.top.toInt()}, R=${bbox.right.toInt()}, B=${bbox.bottom.toInt()}',
-          );
-        }
-        log('└──────────────────────────');
+          final face = primaryFace;
 
-        // Convert raw camera frame to upright image FIRST
-        // Convert raw camera frame to upright image FIRST
-        final uprightImage = await _convertCameraImageToUpright(cameraImage);
-        if (uprightImage == null) {
-          _isDetecting = false;
-          return;
-        }
-
-        log('Upright image: ${uprightImage.width}x${uprightImage.height}');
-
-        // For comparison - log what capture does
-        log(
-          'Note: Capture uses takePicture() which creates properly oriented JPEG',
-        );
-
-        // ML Kit detected faces on rotated image and returned upright bounding boxes
-        // Since we also have upright image, bounding boxes match directly
-        for (final face in faces) {
           final croppedFace = _recognitionService.cropFace(
             uprightImage,
             recognition.Rect(
@@ -226,13 +219,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           );
 
           if (croppedFace != null) {
-            // Store debug image for first face
-
-            log('Cropped face: ${croppedFace.width}x${croppedFace.height}');
             final result = await _recognitionService.recognizeFace(croppedFace);
-            log(
-              'Recognition: name=${result?.name}, conf=${result?.confidence}, match=${result?.isMatch}',
-            );
 
             if (result != null) {
               if (mounted) {
@@ -251,37 +238,13 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                       final duration = DateTime.now().difference(
                         _firstConsistentMatchTime!,
                       );
-                      log(
-                        'Consistent match for ${result.name}: ${duration.inMilliseconds}ms',
-                      );
 
                       if (duration.inSeconds >= 2 && !_isVerificationComplete) {
                         _isVerificationComplete = true;
-                        log(
-                          'Verification successful! Moving to verified page.',
-                        );
 
                         if (mounted) {
-                          // Stop camera before navigating (optional but good practice)
-                          await _cameraController?.stopImageStream();
-
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const VerifiedScreen(),
-                            ),
-                          ).then((_) {
-                            // Reset state when coming back
-                            _isVerificationComplete = false;
-                            _firstConsistentMatchTime = null;
-                            _consistentlyMatchedName = null;
-                            _animationController.reset();
-                            if (mounted) {
-                              setState(() {
-                                _currentConfidence = null;
-                              });
-                            }
-                            _resumeCamera();
+                          setState(() {
+                            // Force UI update
                           });
                         }
                       }
@@ -290,31 +253,25 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                     // New person or first match
                     _consistentlyMatchedName = result.name;
                     _firstConsistentMatchTime = DateTime.now();
+                    _isVerificationComplete = false; // Reset
                     _animationController.forward(from: 0);
                   }
                 } else {
-                  // Low confidence match (shouldn't happen if isMatch is true but safe to keep)
-                  if (_firstConsistentMatchTime != null) {
-                    log('Low confidence match. Resetting timer.');
-                  }
                   _firstConsistentMatchTime = null;
                   _consistentlyMatchedName = null;
+                  _isVerificationComplete = false; // Reset
                   _animationController.reset();
                 }
               } else {
-                // Not a match (confidence < threshold)
-                if (_firstConsistentMatchTime != null) {
-                  log('Match lost or low confidence. Resetting timer.');
-                }
                 _firstConsistentMatchTime = null;
                 _consistentlyMatchedName = null;
+                _isVerificationComplete = false; // Reset
                 _animationController.reset();
-                // Do NOT reset _currentConfidence here so we can show red border
               }
             } else {
-              // Result is null
               _firstConsistentMatchTime = null;
               _consistentlyMatchedName = null;
+              _isVerificationComplete = false; // Reset
               _animationController.reset();
               if (mounted) {
                 setState(() {
@@ -333,11 +290,10 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               ),
             );
           } else {
-            log('Cropped face is null');
             faceInfos.add(DetectedFaceInfo(face: face));
-            // Reset if basic crop fails
             _firstConsistentMatchTime = null;
             _consistentlyMatchedName = null;
+            _isVerificationComplete = false; // Reset
             _animationController.reset();
             if (mounted) {
               setState(() {
@@ -345,24 +301,16 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               });
             }
           }
-        }
-      } else {
-        for (final face in faces) {
-          faceInfos.add(DetectedFaceInfo(face: face));
+        } else {
+          faceInfos.add(DetectedFaceInfo(face: primaryFace));
         }
       }
 
       if (faces.isEmpty && mounted) {
         setState(() {
           _currentConfidence = null;
+          _faceBoundingBox = null;
         });
-      }
-
-      if (mounted) {
-        // setState(() {
-        //   _detectedFaces = faceInfos;
-        //   _debugLiveFaceBytes = currentLiveFaceBytes;
-        // });
       }
     } catch (e) {
       log('Error detecting faces: $e');
@@ -531,16 +479,6 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     return nv21;
   }
 
-  Future<void> _resumeCamera() async {
-    if (_cameraController == null) return;
-
-    try {
-      await _cameraController!.startImageStream(_processCameraImage);
-    } catch (e) {
-      log('Error resuming camera: $e');
-    }
-  }
-
   @override
   void dispose() {
     _animationController.dispose();
@@ -559,150 +497,247 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       );
     }
 
-    final size = MediaQuery.of(context).size;
-    final double circleSize = size.width * 0.75;
+    String statusText;
+    if (_recognitionService.registeredFaces.isEmpty) {
+      statusText = 'Please register a face';
+    } else if (_isVerificationComplete && _consistentlyMatchedName != null) {
+      statusText = 'Verified: $_consistentlyMatchedName';
+    } else if (_currentConfidence != null && _currentConfidence! >= 0.60) {
+      statusText = 'Verifying: ${_consistentlyMatchedName ?? "User"}';
+    } else if (_currentConfidence != null && _currentConfidence! < 0.60) {
+      statusText = 'Can not find similarity with registered face';
+    } else {
+      statusText = 'Position your face in the frame';
+    }
 
-    String greeting = 'Good Evening';
-    final hour = DateTime.now().hour;
-    if (hour < 12) {
-      greeting = 'Good Morning';
-    } else if (hour < 18) {
-      greeting = 'Good Afternoon';
+    Color statusColor = Colors.white;
+    if (_currentConfidence != null) {
+      if (_currentConfidence! >= 0.60) {
+        statusColor = const Color(0xFF00E676);
+      } else {
+        statusColor = Colors.redAccent;
+      }
     }
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
+        leading: const BackButton(color: Colors.white),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: BackButton(color: Colors.black), // Ensure visibility
       ),
-      backgroundColor: Colors.white,
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Full screen camera preview
+          FullScreenCameraPreview(
+            controller: _cameraController!,
+            child:
+                _faceBoundingBox != null &&
+                    _imageSize != null &&
+                    _imageRotation != null
+                ? CustomPaint(
+                    painter: FacePainter(
+                      boundingBox: _faceBoundingBox!,
+                      imageSize: _imageSize!,
+                      rotation: _imageRotation!,
+                      cameraLensDirection:
+                          _cameraController!.description.lensDirection,
+                      color: statusColor,
+                    ),
+                  )
+                : null,
+          ),
 
-      body: SafeArea(
-        child: SizedBox(
-          width: double.infinity,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Text(
-              //   '$greeting, User',
-              //   style: const TextStyle(
-              //     fontSize: 24,
-              //     fontWeight: FontWeight.bold,
-              //     color: Colors.black,
-              //   ),
-              // ),
-              // const SizedBox(height: 50),
-              Stack(
-                alignment: Alignment.center,
-                children: [
-                  // Circular Camera Preview
-                  Container(
-                    width: circleSize,
-                    height: circleSize,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.black,
-                    ),
-                    child: ClipOval(
-                      child: FittedBox(
-                        fit: BoxFit.cover,
-                        child: SizedBox(
-                          width: _cameraController!.value.previewSize!.height,
-                          height: _cameraController!.value.previewSize!.width,
-                          child: CameraPreviewWidget(
-                            controller: _cameraController!,
-                          ),
-                        ),
-                      ),
-                    ),
+          // Overlay Texts
+          Positioned(
+            bottom: 50,
+            left: 0,
+            right: 0,
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 12,
                   ),
-                  // Border
-                  SizedBox(
-                    width: circleSize + 25,
-                    height: circleSize + 25,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        // Static red border for low confidence
-                        if (_currentConfidence != null &&
-                            _currentConfidence! < 0.60)
-                          DecoratedBox(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.red, width: 4),
-                            ),
-                            child: const SizedBox.expand(),
-                          ),
-
-                        // Animated green border for high confidence
-                        if (_currentConfidence != null &&
-                            _currentConfidence! >= 0.60)
-                          AnimatedBuilder(
-                            animation: _animationController,
-                            builder: (context, child) {
-                              return CircularProgressIndicator(
-                                value: _animationController.value,
-                                strokeWidth: 4,
-                                backgroundColor: Colors.grey.withOpacity(0.3),
-                                valueColor: const AlwaysStoppedAnimation<Color>(
-                                  Color(0xFF00E676),
-                                ),
-                              );
-                            },
-                          ),
-
-                        // Default grey border if no confidence yet?
-                        // Optional: keep the grey background of the indicator or add a static grey border if null
-                        if (_currentConfidence == null)
-                          DecoratedBox(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.grey.withOpacity(0.3),
-                                width: 4,
-                              ),
-                            ),
-                            child: const SizedBox.expand(),
-                          ),
-                      ],
-                    ),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(30),
                   ),
-                ],
-              ),
-              const SizedBox(height: 50),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: Text(
-                  _recognitionService.registeredFaces.isEmpty
-                      ? 'Please register a face'
-                      : (_currentConfidence != null &&
-                            _currentConfidence! >= 0.60)
-                      ? 'Please hold your position'
-                      : _currentConfidence != null && _currentConfidence! < 0.60
-                      ? 'Can not find similarity with registered face\nPlease try again'
-                      : 'Position your face inside the circle\nand wait for verification',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.grey,
-                    height: 1.5,
+                  child: Text(
+                    statusText,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
-              ),
-            ],
+                if (_consistentlyMatchedName != null) ...[
+                  const SizedBox(height: 20),
+                  CircularProgressIndicator(
+                    value: _animationController.value,
+                    color: const Color(0xFF00E676),
+                  ),
+                ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
 }
 
-class CameraPreview extends StatelessWidget {
-  final CameraController controller;
+class FacePainter extends CustomPainter {
+  final Rect boundingBox;
+  final Size imageSize;
+  final InputImageRotation rotation;
+  final CameraLensDirection cameraLensDirection;
+  final Color color;
 
-  const CameraPreview({super.key, required this.controller});
+  FacePainter({
+    required this.boundingBox,
+    required this.imageSize,
+    required this.rotation,
+    required this.cameraLensDirection,
+    this.color = Colors.white,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0
+      ..color = color;
+
+    final rect = _scaleRect(
+      rect: boundingBox,
+      imageSize: imageSize,
+      widgetSize: size,
+      rotation: rotation,
+      cameraLensDirection: cameraLensDirection,
+    );
+
+    canvas.drawRect(rect, paint);
+
+    // Draw corners individually for a better look (Optional)
+    // For now simple Box
+  }
+
+  Rect _scaleRect({
+    required Rect rect,
+    required Size imageSize,
+    required Size widgetSize,
+    required InputImageRotation rotation,
+    required CameraLensDirection cameraLensDirection,
+  }) {
+    // 1. Convert to absolute coordinates in the image buffer
+    // ML Kit returns coordinates relative to the "InputImage"
+    // Since we create InputImage.fromBytes, the coordinates are relative to the raw buffer WxH
+
+    // 2. Adjust for Rotation
+    // On Android, the raw buffer is often landscape (e.g. 1920x1080), but rotation is 270/90.
+    // The InputImage rotation metadata informs ML Kit.
+    // However, the bounding box returned by ML Kit is typically axis aligned to the image as it "sits" in the buffer, OR un-rotated.
+    // Documentation says it returns coordinates in the image coordinate system.
+
+    // Let's assume the safe way: Normalize with respect to imageSize.
+    // But we need to know if imageSize.width means the "visual width" or "buffer width".
+    // InputImage.metadata.size is usually the buffer dimensions (1080x1920 or 1920x1080).
+
+    // We need to swap width and height for rotation 90 or 270 on Android
+    // The imageSize we receive here constitutes the "InputImage" metadata size.
+    // However, ML Kit detections are relative to the *unrotated* buffer if we use `fromBytes`.
+    // Wait, the documentation says "The bounding box is relative to the *image*...".
+    // If we passed rotation metadata, ML Kit *internally* handles rotation for detection logic but returns coordinates in the logical image space?
+    // Actually for `fromBytes` with rotation, ML Kit usually returns coordinates respecting that rotation?
+    // Let's rely on standard practice:
+    // 1. Android Buffer is landscape. Rotation 270 means phone is portrait.
+    // 2. ML Kit bounding box is detected on the "rotated" image concept?
+    // No, usually for `processImage(fromBytes)` ML Kit returns coords in the *buffer* coordinate system (Landscape), UNLESS we are very lucky.
+    // Actually, widespread issue.
+
+    // Let's implement the standard transformation:
+    // Source: Google ML Kit Quickstart for Flutter
+
+    final bool isRotated =
+        rotation == InputImageRotation.rotation90deg ||
+        rotation == InputImageRotation.rotation270deg;
+
+    final double scaleX =
+        widgetSize.width /
+        (isRotated && Platform.isAndroid ? imageSize.height : imageSize.width);
+    final double scaleY =
+        widgetSize.height /
+        (isRotated && Platform.isAndroid ? imageSize.width : imageSize.height);
+
+    // Calculate the actual rect based on rotation
+    double left = rect.left;
+    double top = rect.top;
+    double right = rect.right;
+    double bottom = rect.bottom;
+
+    // Manual rotation logic removed to avoid double-rotation.
+    // The bounding box is already in the upright coordinate space.
+
+    Rect scaledRect = Rect.fromLTRB(
+      left * scaleX,
+      top * scaleY,
+      right * scaleX,
+      bottom * scaleY,
+    );
+
+    // Mirroring for front camera
+    if (cameraLensDirection == CameraLensDirection.front) {
+      if (Platform.isAndroid &&
+          isRotated &&
+          rotation == InputImageRotation.rotation270deg) {
+        // It seems for 270 (portrait), we might not need extra mirroring if the rotation logic above already accounted for "visual" orientation?
+        // BUT usually front camera preview IS mirrored.
+        // Drawing must be mirrored relative to the widget center.
+        final centerX = widgetSize.width / 2;
+        scaledRect = Rect.fromLTRB(
+          centerX + (centerX - scaledRect.right),
+          scaledRect.top,
+          centerX + (centerX - scaledRect.left),
+          scaledRect.bottom,
+        );
+      } else {
+        final centerX = widgetSize.width / 2;
+        scaledRect = Rect.fromLTRB(
+          centerX + (centerX - scaledRect.right),
+          scaledRect.top,
+          centerX + (centerX - scaledRect.left),
+          scaledRect.bottom,
+        );
+      }
+    }
+
+    return scaledRect;
+  }
+
+  @override
+  bool shouldRepaint(FacePainter oldDelegate) {
+    return oldDelegate.boundingBox != boundingBox ||
+        oldDelegate.imageSize != imageSize ||
+        oldDelegate.rotation != rotation ||
+        oldDelegate.color != color;
+  }
+}
+
+class FullScreenCameraPreview extends StatelessWidget {
+  final CameraController controller;
+  final Widget? child;
+
+  const FullScreenCameraPreview({
+    super.key,
+    required this.controller,
+    this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -716,7 +751,13 @@ class CameraPreview extends StatelessWidget {
             child: SizedBox(
               width: controller.value.previewSize!.height,
               height: controller.value.previewSize!.width,
-              child: CameraPreviewWidget(controller: controller),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  CameraPreviewWidget(controller: controller),
+                  if (child != null) child!,
+                ],
+              ),
             ),
           ),
         );
