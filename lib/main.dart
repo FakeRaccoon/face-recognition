@@ -1,6 +1,6 @@
 import 'dart:developer' show log;
 import 'dart:io';
-import 'dart:math' hide log;
+
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -58,15 +58,14 @@ class DetectedFaceInfo {
   });
 }
 
-class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
+class _FaceDetectionScreenState extends State<FaceDetectionScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _animationController;
   CameraController? _cameraController;
   bool _isDetecting = false;
-  bool _isCameraPaused = false;
-  List<DetectedFaceInfo> _detectedFaces = [];
-  Uint8List? _debugLiveFaceBytes;
-  Uint8List? _capturedImageBytes;
   int _cameraIndex = 0;
   DateTime? _lastRecognitionTime;
+  double? _currentConfidence;
 
   final recognition.FaceRecognitionService _recognitionService =
       recognition.FaceRecognitionService();
@@ -91,6 +90,10 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
   @override
   void initState() {
     super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    );
     _initializeServices();
   }
 
@@ -154,7 +157,6 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
       final faces = await _faceDetector.processImage(inputImage);
       final List<DetectedFaceInfo> faceInfos = [];
-      Uint8List? currentLiveFaceBytes;
 
       if (_isRecognitionReady &&
           _recognitionService.registeredFaces.isNotEmpty) {
@@ -228,55 +230,93 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
               'Recognition: name=${result?.name}, conf=${result?.confidence}, match=${result?.isMatch}',
             );
 
-            if (result != null && result.isMatch && result.confidence >= 0.60) {
-              if (_consistentlyMatchedName == result.name) {
-                // Same person continuing to match
-                if (_firstConsistentMatchTime == null) {
-                  _firstConsistentMatchTime = DateTime.now();
-                } else {
-                  final duration = DateTime.now().difference(
-                    _firstConsistentMatchTime!,
-                  );
-                  log(
-                    'Consistent match for ${result.name}: ${duration.inMilliseconds}ms',
-                  );
+            if (result != null) {
+              if (mounted) {
+                setState(() {
+                  _currentConfidence = result.confidence;
+                });
+              }
 
-                  if (duration.inSeconds >= 2 && !_isVerificationComplete) {
-                    _isVerificationComplete = true;
-                    log('Verification successful! Moving to verified page.');
+              if (result.isMatch) {
+                if (result.confidence >= 0.60) {
+                  if (_consistentlyMatchedName == result.name) {
+                    // Same person continuing to match
+                    if (_firstConsistentMatchTime == null) {
+                      _firstConsistentMatchTime = DateTime.now();
+                    } else {
+                      final duration = DateTime.now().difference(
+                        _firstConsistentMatchTime!,
+                      );
+                      log(
+                        'Consistent match for ${result.name}: ${duration.inMilliseconds}ms',
+                      );
 
-                    if (mounted) {
-                      // Stop camera before navigating (optional but good practice)
-                      await _cameraController?.stopImageStream();
-                      _isCameraPaused = true;
+                      if (duration.inSeconds >= 2 && !_isVerificationComplete) {
+                        _isVerificationComplete = true;
+                        log(
+                          'Verification successful! Moving to verified page.',
+                        );
 
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const VerifiedScreen(),
-                        ),
-                      ).then((_) {
-                        // Reset state when coming back
-                        _isVerificationComplete = false;
-                        _firstConsistentMatchTime = null;
-                        _consistentlyMatchedName = null;
-                        _resumeCamera();
-                      });
+                        if (mounted) {
+                          // Stop camera before navigating (optional but good practice)
+                          await _cameraController?.stopImageStream();
+
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const VerifiedScreen(),
+                            ),
+                          ).then((_) {
+                            // Reset state when coming back
+                            _isVerificationComplete = false;
+                            _firstConsistentMatchTime = null;
+                            _consistentlyMatchedName = null;
+                            _animationController.reset();
+                            if (mounted) {
+                              setState(() {
+                                _currentConfidence = null;
+                              });
+                            }
+                            _resumeCamera();
+                          });
+                        }
+                      }
                     }
+                  } else {
+                    // New person or first match
+                    _consistentlyMatchedName = result.name;
+                    _firstConsistentMatchTime = DateTime.now();
+                    _animationController.forward(from: 0);
                   }
+                } else {
+                  // Low confidence match (shouldn't happen if isMatch is true but safe to keep)
+                  if (_firstConsistentMatchTime != null) {
+                    log('Low confidence match. Resetting timer.');
+                  }
+                  _firstConsistentMatchTime = null;
+                  _consistentlyMatchedName = null;
+                  _animationController.reset();
                 }
               } else {
-                // New person or first match
-                _consistentlyMatchedName = result.name;
-                _firstConsistentMatchTime = DateTime.now();
+                // Not a match (confidence < threshold)
+                if (_firstConsistentMatchTime != null) {
+                  log('Match lost or low confidence. Resetting timer.');
+                }
+                _firstConsistentMatchTime = null;
+                _consistentlyMatchedName = null;
+                _animationController.reset();
+                // Do NOT reset _currentConfidence here so we can show red border
               }
             } else {
-              // Match lost or low confidence
-              if (_firstConsistentMatchTime != null) {
-                log('Match lost or low confidence. Resetting timer.');
-              }
+              // Result is null
               _firstConsistentMatchTime = null;
               _consistentlyMatchedName = null;
+              _animationController.reset();
+              if (mounted) {
+                setState(() {
+                  _currentConfidence = null;
+                });
+              }
             }
 
             faceInfos.add(
@@ -294,6 +334,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
             // Reset if basic crop fails
             _firstConsistentMatchTime = null;
             _consistentlyMatchedName = null;
+            _animationController.reset();
+            if (mounted) {
+              setState(() {
+                _currentConfidence = null;
+              });
+            }
           }
         }
       } else {
@@ -302,11 +348,17 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         }
       }
 
-      if (mounted) {
+      if (faces.isEmpty && mounted) {
         setState(() {
-          _detectedFaces = faceInfos;
-          _debugLiveFaceBytes = currentLiveFaceBytes;
+          _currentConfidence = null;
         });
+      }
+
+      if (mounted) {
+        // setState(() {
+        //   _detectedFaces = faceInfos;
+        //   _debugLiveFaceBytes = currentLiveFaceBytes;
+        // });
       }
     } catch (e) {
       log('Error detecting faces: $e');
@@ -615,130 +667,11 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     return nv21;
   }
 
-  Future<void> _captureAndRecognize() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return;
-    }
-
-    // Pause camera stream
-    await _cameraController!.stopImageStream();
-    setState(() {
-      _isCameraPaused = true;
-    });
-
-    try {
-      // Capture image
-      final XFile capturedFile = await _cameraController!.takePicture();
-
-      // Read captured image
-      final bytes = await capturedFile.readAsBytes();
-
-      // Process captured image
-      final image = img.decodeImage(bytes);
-      if (image == null) {
-        _showSnackBar('Could not decode captured image');
-        return;
-      }
-
-      // Flip captured image horizontally for front camera to match mirror behavior
-      img.Image displayImage = image;
-      final isFrontCamera =
-          cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
-      if (isFrontCamera) {
-        displayImage = img.flipHorizontal(image);
-      }
-
-      // Update state with flipped image for display
-      setState(() {
-        _capturedImageBytes = img.encodePng(displayImage);
-      });
-
-      // Detect face in captured image
-      final inputImage = InputImage.fromFilePath(capturedFile.path);
-      final faces = await _faceDetector.processImage(inputImage);
-
-      if (faces.isEmpty) {
-        _showSnackBar('No face detected in captured image');
-        return;
-      }
-
-      // Find largest face
-      Face? largestFace;
-      double maxArea = 0;
-      for (final face in faces) {
-        final area = face.boundingBox.width * face.boundingBox.height;
-        if (area > maxArea) {
-          maxArea = area;
-          largestFace = face;
-        }
-      }
-
-      if (largestFace == null) {
-        _showSnackBar('Could not find face in image');
-        return;
-      }
-
-      // Crop face from captured image
-      final croppedFace = _recognitionService.cropFace(
-        image,
-        recognition.Rect(
-          left: largestFace.boundingBox.left,
-          top: largestFace.boundingBox.top,
-          right: largestFace.boundingBox.right,
-          bottom: largestFace.boundingBox.bottom,
-        ),
-      );
-
-      if (croppedFace == null) {
-        _showSnackBar('Could not crop face from image');
-        return;
-      }
-
-      // Recognize face
-      if (_recognitionService.registeredFaces.isNotEmpty) {
-        final result = await _recognitionService.recognizeFace(croppedFace);
-
-        // Update detected faces with recognition result
-        final List<DetectedFaceInfo> faceInfos = [];
-        faceInfos.add(
-          DetectedFaceInfo(
-            face: largestFace,
-            recognizedName: result?.isMatch == true ? result?.name : null,
-            confidence: result?.isMatch == true ? result?.confidence : null,
-            bestMatchName: result?.name,
-            bestMatchScore: result?.confidence,
-          ),
-        );
-
-        setState(() {
-          _detectedFaces = faceInfos;
-        });
-
-        if (result != null && result.isMatch) {
-          _showSnackBar(
-            'Matched: ${result.name} (${(result.confidence * 100).toStringAsFixed(1)}%)',
-          );
-        } else {
-          _showSnackBar('No match found');
-        }
-      } else {
-        _showSnackBar('No registered faces to compare');
-      }
-    } catch (e) {
-      log('Error capturing and recognizing: $e');
-      _showSnackBar('Error during capture');
-    }
-  }
-
   Future<void> _resumeCamera() async {
     if (_cameraController == null) return;
 
     try {
       await _cameraController!.startImageStream(_processCameraImage);
-      setState(() {
-        _isCameraPaused = false;
-        _capturedImageBytes = null;
-      });
     } catch (e) {
       log('Error resuming camera: $e');
     }
@@ -856,104 +789,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     );
   }
 
-  void _showRegisteredFaces() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Registered Faces',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                if (_recognitionService.registeredFaces.isNotEmpty)
-                  TextButton(
-                    onPressed: () {
-                      _recognitionService.clearAllFaces();
-                      Navigator.pop(context);
-                      setState(() {});
-                      _showSnackBar('All faces cleared');
-                    },
-                    child: const Text('Clear All'),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (_recognitionService.registeredFaces.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('No faces registered yet'),
-              )
-            else
-              ...(_recognitionService.registeredFaces.map(
-                (face) => ListTile(
-                  leading: face.faceBytes != null
-                      ? ClipOval(
-                          child: Image.memory(
-                            face.faceBytes!,
-                            width: 40,
-                            height: 40,
-                            fit: BoxFit.cover,
-                          ),
-                        )
-                      : const Icon(Icons.face),
-                  title: Text(face.name),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete),
-                    onPressed: () {
-                      _recognitionService.removeFace(face.name);
-                      Navigator.pop(context);
-                      setState(() {});
-                      _showSnackBar('${face.name} removed');
-                    },
-                  ),
-                ),
-              )),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _switchCamera() async {
-    if (cameras.length < 2) return;
-
-    await _cameraController?.stopImageStream();
-    await _cameraController?.dispose();
-
-    _cameraIndex = (_cameraIndex + 1) % cameras.length;
-
-    _cameraController = CameraController(
-      cameras[_cameraIndex],
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: Platform.isAndroid
-          ? ImageFormatGroup.nv21
-          : ImageFormatGroup.bgra8888,
-    );
-
-    try {
-      await _cameraController!.initialize();
-      await _cameraController!.startImageStream(_processCameraImage);
-      if (mounted) {
-        setState(() {
-          _detectedFaces = [];
-          _lastRecognitionTime = null; // Reset debounce timer
-        });
-      }
-    } catch (e) {
-      log('Error switching camera: $e');
-    }
-  }
-
   @override
   void dispose() {
+    _animationController.dispose();
     _cameraController?.dispose();
     _faceDetector.close();
     _recognitionService.dispose();
@@ -962,246 +800,147 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Face Recognition'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          // IconButton(
-          //   icon: const Icon(Icons.compare),
-          //   onPressed: () {
-          //     Navigator.push(
-          //       context,
-          //       MaterialPageRoute(
-          //         builder: (context) => FaceComparisonScreen(
-          //           recognitionService: _recognitionService,
-          //         ),
-          //       ),
-          //     );
-          //   },
-          //   tooltip: 'Compare Faces',
-          // ),
-          // IconButton(
-          //   icon: const Icon(Icons.people),
-          //   onPressed: _showRegisteredFaces,
-          //   tooltip: 'Registered Faces',
-          // ),
-          if (cameras.length > 1)
-            IconButton(
-              icon: const Icon(Icons.cameraswitch),
-              onPressed: _switchCamera,
-              tooltip: 'Switch Camera',
-            ),
-        ],
-      ),
-      body: _buildBody(),
-      floatingActionButton: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          // if (_isCameraPaused)
-          //   FloatingActionButton.extended(
-          //     onPressed: _resumeCamera,
-          //     icon: const Icon(Icons.play_arrow),
-          //     label: const Text('Resume'),
-          //     backgroundColor: Colors.orange,
-          //   )
-          // else
-          //   FloatingActionButton.extended(
-          //     onPressed: _isRecognitionReady ? _captureAndRecognize : null,
-          //     icon: const Icon(Icons.camera_alt),
-          //     label: const Text('Capture'),
-          //   ),
-          // const SizedBox(width: 16),
-          FloatingActionButton.extended(
-            onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
-            icon: const Icon(Icons.add_a_photo),
-            label: const Text('Register'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBody() {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return const Center(child: CircularProgressIndicator());
+      return const Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        CameraPreview(controller: _cameraController!),
-        CustomPaint(
-          painter: FacePainter(
-            faces: _detectedFaces,
-            imageSize: Size(
-              _cameraController!.value.previewSize!.height,
-              _cameraController!.value.previewSize!.width,
-            ),
-            isFrontCamera:
-                cameras[_cameraIndex].lensDirection ==
-                CameraLensDirection.front,
-          ),
-        ),
-        Positioned(
-          bottom: 80,
-          left: 20,
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black54,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Faces: ${_detectedFaces.length}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'Registered: ${_recognitionService.registeredFaces.length}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                if (!_isRecognitionReady)
-                  const Text(
-                    'Loading model...',
-                    style: TextStyle(color: Colors.orange, fontSize: 12),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        // Display captured image when camera is paused
-        if (_capturedImageBytes != null && _isCameraPaused)
-          Container(
-            color: Colors.black87,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+    final size = MediaQuery.of(context).size;
+    final double circleSize = size.width * 0.75;
+
+    String greeting = 'Good Evening';
+    final hour = DateTime.now().hour;
+    if (hour < 12) {
+      greeting = 'Good Morning';
+    } else if (hour < 18) {
+      greeting = 'Good Afternoon';
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
+        icon: const Icon(Icons.add_a_photo),
+        label: const Text('Register'),
+      ),
+      body: SafeArea(
+        child: SizedBox(
+          width: double.infinity,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Text(
+              //   '$greeting, User',
+              //   style: const TextStyle(
+              //     fontSize: 24,
+              //     fontWeight: FontWeight.bold,
+              //     color: Colors.black,
+              //   ),
+              // ),
+              // const SizedBox(height: 50),
+              Stack(
+                alignment: Alignment.center,
                 children: [
-                  const Text(
-                    'Captured Image',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
+                  // Circular Camera Preview
                   Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white, width: 3),
+                    width: circleSize,
+                    height: circleSize,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black,
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.memory(
-                        _capturedImageBytes!,
-                        width: 300,
-                        height: 300,
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Tap "Resume" to continue',
-                    style: TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        // Display Registered Face Thumbnail for Debugging
-        if (_recognitionService.registeredFaces.isNotEmpty &&
-            _recognitionService.registeredFaces.first.faceBytes != null &&
-            !_isCameraPaused)
-          Positioned(
-            top: 20,
-            right: 20,
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.green, width: 2),
-                  ),
-                  child: Column(
-                    children: [
-                      const Text(
-                        'Registered',
-                        style: TextStyle(color: Colors.white, fontSize: 10),
-                      ),
-                      const SizedBox(height: 4),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: Image.memory(
-                          _recognitionService.registeredFaces.first.faceBytes!,
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
+                    child: ClipOval(
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: _cameraController!.value.previewSize!.height,
+                          height: _cameraController!.value.previewSize!.width,
+                          child: CameraPreviewWidget(
+                            controller: _cameraController!,
+                          ),
                         ),
                       ),
-                      Text(
-                        _recognitionService.registeredFaces.first.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (_debugLiveFaceBytes != null) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.orange, width: 2),
                     ),
-                    child: Column(
+                  ),
+                  // Border
+                  SizedBox(
+                    width: circleSize + 25,
+                    height: circleSize + 25,
+                    child: Stack(
+                      fit: StackFit.expand,
                       children: [
-                        const Text(
-                          'Live Input',
-                          style: TextStyle(color: Colors.white, fontSize: 10),
-                        ),
-                        const SizedBox(height: 4),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: Image.memory(
-                            _debugLiveFaceBytes!,
-                            width: 80,
-                            height: 80,
-                            fit: BoxFit.cover,
+                        // Static red border for low confidence
+                        if (_currentConfidence != null &&
+                            _currentConfidence! < 0.60)
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.red, width: 4),
+                            ),
+                            child: const SizedBox.expand(),
                           ),
-                        ),
-                        const Text(
-                          'Model Input',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+
+                        // Animated green border for high confidence
+                        if (_currentConfidence != null &&
+                            _currentConfidence! >= 0.60)
+                          AnimatedBuilder(
+                            animation: _animationController,
+                            builder: (context, child) {
+                              return CircularProgressIndicator(
+                                value: _animationController.value,
+                                strokeWidth: 4,
+                                backgroundColor: Colors.grey.withOpacity(0.3),
+                                valueColor: const AlwaysStoppedAnimation<Color>(
+                                  Color(0xFF00E676),
+                                ),
+                              );
+                            },
                           ),
-                        ),
+
+                        // Default grey border if no confidence yet?
+                        // Optional: keep the grey background of the indicator or add a static grey border if null
+                        if (_currentConfidence == null)
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.grey.withOpacity(0.3),
+                                width: 4,
+                              ),
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
                       ],
                     ),
                   ),
                 ],
-              ],
-            ),
+              ),
+              const SizedBox(height: 50),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 40),
+                child: Text(
+                  _recognitionService.registeredFaces.isEmpty
+                      ? 'Please register a face'
+                      : (_currentConfidence != null &&
+                            _currentConfidence! >= 0.60)
+                      ? 'Please hold your position'
+                      : _currentConfidence != null && _currentConfidence! < 0.60
+                      ? 'Can not find similarity with registered face\nPlease try again'
+                      : 'Position your face inside the circle\nand wait for verification',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.grey,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+            ],
           ),
-      ],
+        ),
+      ),
     );
   }
 }
@@ -1240,141 +979,5 @@ class CameraPreviewWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return controller.buildPreview();
-  }
-}
-
-class FacePainter extends CustomPainter {
-  final List<DetectedFaceInfo> faces;
-  final Size imageSize;
-  final bool isFrontCamera;
-
-  FacePainter({
-    required this.faces,
-    required this.imageSize,
-    required this.isFrontCamera,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final Paint paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0;
-
-    final Paint textBgPaint = Paint()
-      ..color = Colors.black54
-      ..style = PaintingStyle.fill;
-
-    for (final info in faces) {
-      final face = info.face;
-      final color = info.recognizedName != null ? Colors.green : Colors.orange;
-      paint.color = color;
-
-      // Scale coordinates
-      // ML Kit coordinates are based on the image size
-      final double scaleX = size.width / imageSize.width;
-      final double scaleY = size.height / imageSize.height;
-
-      double left = face.boundingBox.left * scaleX;
-      double top = face.boundingBox.top * scaleY;
-      double right = face.boundingBox.right * scaleX;
-      double bottom = face.boundingBox.bottom * scaleY;
-
-      if (isFrontCamera) {
-        // Mirror X for front camera
-        left = size.width - right;
-        right = size.width - (face.boundingBox.left * scaleX);
-      }
-
-      final rect = Rect.fromLTRB(left, top, right, bottom);
-      canvas.drawRect(rect, paint);
-
-      // Draw Landmarks (Optional, for debug)
-      // _drawLandmarks(canvas, face, scaleX, scaleY, size);
-
-      // Draw Name & Confidence
-      final String label = info.recognizedName ?? 'Unknown';
-      final String score = info.bestMatchScore != null
-          ? '(${(info.bestMatchScore! * 100).toStringAsFixed(1)}%)'
-          : '';
-
-      final textSpan = TextSpan(
-        text: '$label $score',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-      );
-
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      );
-
-      textPainter.layout();
-
-      final double textX = left;
-      final double textY = top - 30; // Above the box
-
-      // Draw background for text
-      canvas.drawRect(
-        Rect.fromLTWH(
-          textX - 5,
-          textY - 5,
-          textPainter.width + 10,
-          textPainter.height + 10,
-        ),
-        textBgPaint,
-      );
-
-      textPainter.paint(canvas, Offset(textX, textY));
-    }
-  }
-
-  Rect _scaleRect({
-    required Rect rect,
-    required Size imageSize,
-    required Size widgetSize,
-  }) {
-    final scaleX = widgetSize.width / imageSize.width;
-    final scaleY = widgetSize.height / imageSize.height;
-
-    double left = rect.left * scaleX;
-    double top = rect.top * scaleY;
-    double right = rect.right * scaleX;
-    double bottom = rect.bottom * scaleY;
-
-    if (isFrontCamera) {
-      final temp = left;
-      left = widgetSize.width - right;
-      right = widgetSize.width - temp;
-    }
-
-    return Rect.fromLTRB(left, top, right, bottom);
-  }
-
-  Offset _scalePoint({
-    required Point<int> point,
-    required Size imageSize,
-    required Size widgetSize,
-  }) {
-    final scaleX = widgetSize.width / imageSize.width;
-    final scaleY = widgetSize.height / imageSize.height;
-
-    double x = point.x.toDouble() * scaleX;
-    double y = point.y.toDouble() * scaleY;
-
-    if (isFrontCamera) {
-      x = widgetSize.width - x;
-    }
-
-    return Offset(x, y);
-  }
-
-  @override
-  bool shouldRepaint(FacePainter oldDelegate) {
-    return oldDelegate.faces != faces ||
-        oldDelegate.imageSize != imageSize ||
-        oldDelegate.isFrontCamera != isFrontCamera;
   }
 }
