@@ -8,7 +8,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'services/face_recognition_service.dart' as recognition;
-import 'face_comparison_screen.dart';
+import 'verified_screen.dart';
 
 List<CameraDescription> cameras = [];
 
@@ -72,6 +72,11 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       recognition.FaceRecognitionService();
   final ImagePicker _imagePicker = ImagePicker();
   bool _isRecognitionReady = false;
+
+  // Verification state
+  DateTime? _firstConsistentMatchTime;
+  String? _consistentlyMatchedName;
+  bool _isVerificationComplete = false;
 
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
@@ -137,6 +142,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       // Use original method for ML Kit detection (handles rotation properly)
       final inputImage = _convertCameraImage(cameraImage);
       if (inputImage == null) {
+        _isDetecting = false;
+        return;
+      }
+
+      // Stop processing if already verified
+      if (_isVerificationComplete) {
         _isDetecting = false;
         return;
       }
@@ -217,6 +228,57 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
               'Recognition: name=${result?.name}, conf=${result?.confidence}, match=${result?.isMatch}',
             );
 
+            if (result != null && result.isMatch && result.confidence >= 0.60) {
+              if (_consistentlyMatchedName == result.name) {
+                // Same person continuing to match
+                if (_firstConsistentMatchTime == null) {
+                  _firstConsistentMatchTime = DateTime.now();
+                } else {
+                  final duration = DateTime.now().difference(
+                    _firstConsistentMatchTime!,
+                  );
+                  log(
+                    'Consistent match for ${result.name}: ${duration.inMilliseconds}ms',
+                  );
+
+                  if (duration.inSeconds >= 2 && !_isVerificationComplete) {
+                    _isVerificationComplete = true;
+                    log('Verification successful! Moving to verified page.');
+
+                    if (mounted) {
+                      // Stop camera before navigating (optional but good practice)
+                      await _cameraController?.stopImageStream();
+                      _isCameraPaused = true;
+
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const VerifiedScreen(),
+                        ),
+                      ).then((_) {
+                        // Reset state when coming back
+                        _isVerificationComplete = false;
+                        _firstConsistentMatchTime = null;
+                        _consistentlyMatchedName = null;
+                        _resumeCamera();
+                      });
+                    }
+                  }
+                }
+              } else {
+                // New person or first match
+                _consistentlyMatchedName = result.name;
+                _firstConsistentMatchTime = DateTime.now();
+              }
+            } else {
+              // Match lost or low confidence
+              if (_firstConsistentMatchTime != null) {
+                log('Match lost or low confidence. Resetting timer.');
+              }
+              _firstConsistentMatchTime = null;
+              _consistentlyMatchedName = null;
+            }
+
             faceInfos.add(
               DetectedFaceInfo(
                 face: face,
@@ -229,6 +291,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
           } else {
             log('Cropped face is null');
             faceInfos.add(DetectedFaceInfo(face: face));
+            // Reset if basic crop fails
+            _firstConsistentMatchTime = null;
+            _consistentlyMatchedName = null;
           }
         }
       } else {
@@ -335,14 +400,16 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
             final int uValue = bytes[uvIndex + 1]; // U second
 
             // YUV to RGB conversion
-            final r =
-                (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
+            final r = (yValue + 1.370705 * (vValue - 128))
+                .clamp(0, 255)
+                .toInt();
             final g =
                 (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
                     .clamp(0, 255)
                     .toInt();
-            final b =
-                (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
+            final b = (yValue + 1.732446 * (uValue - 128))
+                .clamp(0, 255)
+                .toInt();
 
             image.setPixelRgb(x, y, r, g, b);
           }
@@ -369,14 +436,16 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
             final int uValue = uPlane.bytes[uvIndex];
             final int vValue = vPlane.bytes[uvIndex];
 
-            final r =
-                (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
+            final r = (yValue + 1.370705 * (vValue - 128))
+                .clamp(0, 255)
+                .toInt();
             final g =
                 (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
                     .clamp(0, 255)
                     .toInt();
-            final b =
-                (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
+            final b = (yValue + 1.732446 * (uValue - 128))
+                .clamp(0, 255)
+                .toInt();
 
             image.setPixelRgb(x, y, r, g, b);
           }
@@ -559,12 +628,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
 
     try {
       // Capture image
-      final XFile? capturedFile = await _cameraController!.takePicture();
-      if (capturedFile == null) {
-        _showSnackBar('Failed to capture image');
-        await _resumeCamera();
-        return;
-      }
+      final XFile capturedFile = await _cameraController!.takePicture();
 
       // Read captured image
       final bytes = await capturedFile.readAsBytes();
@@ -903,25 +967,25 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         title: const Text('Face Recognition'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.compare),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => FaceComparisonScreen(
-                    recognitionService: _recognitionService,
-                  ),
-                ),
-              );
-            },
-            tooltip: 'Compare Faces',
-          ),
-          IconButton(
-            icon: const Icon(Icons.people),
-            onPressed: _showRegisteredFaces,
-            tooltip: 'Registered Faces',
-          ),
+          // IconButton(
+          //   icon: const Icon(Icons.compare),
+          //   onPressed: () {
+          //     Navigator.push(
+          //       context,
+          //       MaterialPageRoute(
+          //         builder: (context) => FaceComparisonScreen(
+          //           recognitionService: _recognitionService,
+          //         ),
+          //       ),
+          //     );
+          //   },
+          //   tooltip: 'Compare Faces',
+          // ),
+          // IconButton(
+          //   icon: const Icon(Icons.people),
+          //   onPressed: _showRegisteredFaces,
+          //   tooltip: 'Registered Faces',
+          // ),
           if (cameras.length > 1)
             IconButton(
               icon: const Icon(Icons.cameraswitch),
@@ -934,20 +998,20 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       floatingActionButton: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          if (_isCameraPaused)
-            FloatingActionButton.extended(
-              onPressed: _resumeCamera,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Resume'),
-              backgroundColor: Colors.orange,
-            )
-          else
-            FloatingActionButton.extended(
-              onPressed: _isRecognitionReady ? _captureAndRecognize : null,
-              icon: const Icon(Icons.camera_alt),
-              label: const Text('Capture'),
-            ),
-          const SizedBox(width: 16),
+          // if (_isCameraPaused)
+          //   FloatingActionButton.extended(
+          //     onPressed: _resumeCamera,
+          //     icon: const Icon(Icons.play_arrow),
+          //     label: const Text('Resume'),
+          //     backgroundColor: Colors.orange,
+          //   )
+          // else
+          //   FloatingActionButton.extended(
+          //     onPressed: _isRecognitionReady ? _captureAndRecognize : null,
+          //     icon: const Icon(Icons.camera_alt),
+          //     label: const Text('Capture'),
+          //   ),
+          // const SizedBox(width: 16),
           FloatingActionButton.extended(
             onPressed: _isRecognitionReady ? _registerFaceFromGallery : null,
             icon: const Icon(Icons.add_a_photo),
