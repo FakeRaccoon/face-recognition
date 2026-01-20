@@ -1,7 +1,8 @@
 import 'dart:developer' show log;
 import 'dart:io';
 
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:face_detection/utils/image_converter_isolate.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -195,7 +196,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         log('└──────────────────────────');
 
         // Convert raw camera frame to upright image FIRST
-        final uprightImage = _convertCameraImageToUpright(cameraImage);
+        // Convert raw camera frame to upright image FIRST
+        final uprightImage = await _convertCameraImageToUpright(cameraImage);
         if (uprightImage == null) {
           _isDetecting = false;
           return;
@@ -367,176 +369,36 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     _isDetecting = false;
   }
 
-  img.Image? _convertCameraImageToUpright(CameraImage cameraImage) {
+  Future<img.Image?> _convertCameraImageToUpright(
+    CameraImage cameraImage,
+  ) async {
     try {
       final camera = cameras[_cameraIndex];
       final sensorOrientation = camera.sensorOrientation;
-      final isFrontCamera = camera.lensDirection == CameraLensDirection.front;
 
-      log(
-        'Converting to upright: sensorOrientation=$sensorOrientation, isFront=$isFrontCamera',
+      // Extract plane data to send to isolate
+      final planes = cameraImage.planes.map((p) {
+        return CameraPlaneMessage(
+          bytes: p.bytes,
+          bytesPerRow: p.bytesPerRow,
+          bytesPerPixel: p.bytesPerPixel,
+        );
+      }).toList();
+
+      final message = CameraImageMessage(
+        planes: planes,
+        width: cameraImage.width,
+        height: cameraImage.height,
+        sensorOrientation: sensorOrientation,
+        isAndroid: Platform.isAndroid,
+        isIOS: Platform.isIOS,
       );
 
-      // Convert to image first
-      final rawImage = _convertCameraImageToImg(cameraImage);
-      if (rawImage == null) {
-        log('FAILED: _convertCameraImageToImg returned null');
-        return null;
-      }
-
-      log('Raw image converted: ${rawImage.width}x${rawImage.height}');
-
-      // Rotate image to upright based on sensor orientation
-      img.Image uprightImage = rawImage;
-      if (sensorOrientation != 0) {
-        log('Rotating by $sensorOrientation degrees...');
-        // Rotate counter-clockwise to make it upright
-        uprightImage = img.copyRotate(
-          rawImage,
-          angle: sensorOrientation.toDouble(),
-        );
-        log('After rotation: ${uprightImage.width}x${uprightImage.height}');
-      }
-
-      // Flip horizontally for front camera to match mirror behavior
-      if (isFrontCamera) {
-        log('Flipping horizontally for front camera...');
-        uprightImage = img.flipHorizontal(uprightImage);
-        log('After flip: ${uprightImage.width}x${uprightImage.height}');
-      }
-
-      log('SUCCESS: Upright image ready');
-      return uprightImage;
-    } catch (e, stackTrace) {
-      log('ERROR converting camera image to upright: $e');
-      log('Stack trace: $stackTrace');
-      return null;
-    }
-  }
-
-  img.Image? _convertCameraImageToImg(CameraImage cameraImage) {
-    try {
-      if (Platform.isAndroid) {
-        return _convertYUV420ToImage(cameraImage);
-      } else if (Platform.isIOS) {
-        return _convertBGRA8888ToImage(cameraImage);
-      }
+      return await compute(convertCameraImageToUpright, message);
     } catch (e) {
       log('Error converting camera image: $e');
-    }
-    return null;
-  }
-
-  img.Image? _convertYUV420ToImage(CameraImage cameraImage) {
-    final int width = cameraImage.width;
-    final int height = cameraImage.height;
-    final image = img.Image(width: width, height: height);
-
-    try {
-      final int planeCount = cameraImage.planes.length;
-      log('YUV planes count: $planeCount, dims: ${width}x$height');
-
-      if (planeCount == 1) {
-        // NV21 single plane format: Y followed by interleaved VU
-        final bytes = cameraImage.planes[0].bytes;
-        final int ySize = width * height;
-
-        for (int y = 0; y < height; y++) {
-          for (int x = 0; x < width; x++) {
-            final int yIndex = y * width + x;
-            final int yValue = bytes[yIndex];
-
-            // VU data starts after Y plane, interleaved
-            final int uvIndex = ySize + (y ~/ 2) * width + (x ~/ 2) * 2;
-            final int vValue = bytes[uvIndex]; // V first in NV21
-            final int uValue = bytes[uvIndex + 1]; // U second
-
-            // YUV to RGB conversion
-            final r = (yValue + 1.370705 * (vValue - 128))
-                .clamp(0, 255)
-                .toInt();
-            final g =
-                (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
-                    .clamp(0, 255)
-                    .toInt();
-            final b = (yValue + 1.732446 * (uValue - 128))
-                .clamp(0, 255)
-                .toInt();
-
-            image.setPixelRgb(x, y, r, g, b);
-          }
-        }
-      } else if (planeCount >= 3) {
-        // YUV420 with separate planes
-        final yPlane = cameraImage.planes[0];
-        final uPlane = cameraImage.planes[1];
-        final vPlane = cameraImage.planes[2];
-
-        final int yRowStride = yPlane.bytesPerRow;
-        final int uvRowStride = uPlane.bytesPerRow;
-        final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
-
-        for (int y = 0; y < height; y++) {
-          for (int x = 0; x < width; x++) {
-            final int yIndex = y * yRowStride + x;
-            final int yValue = yPlane.bytes[yIndex];
-
-            final int uvY = y ~/ 2;
-            final int uvX = x ~/ 2;
-            final int uvIndex = uvY * uvRowStride + uvX * uvPixelStride;
-
-            final int uValue = uPlane.bytes[uvIndex];
-            final int vValue = vPlane.bytes[uvIndex];
-
-            final r = (yValue + 1.370705 * (vValue - 128))
-                .clamp(0, 255)
-                .toInt();
-            final g =
-                (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
-                    .clamp(0, 255)
-                    .toInt();
-            final b = (yValue + 1.732446 * (uValue - 128))
-                .clamp(0, 255)
-                .toInt();
-
-            image.setPixelRgb(x, y, r, g, b);
-          }
-        }
-      } else {
-        log('Unsupported plane count: $planeCount');
-        return null;
-      }
-    } catch (e) {
-      log('Error converting YUV: $e');
-      log(
-        'Planes: ${cameraImage.planes.map((p) => 'len=${p.bytes.length}, row=${p.bytesPerRow}, pixel=${p.bytesPerPixel}').join(', ')}',
-      );
       return null;
     }
-
-    return image;
-  }
-
-  img.Image? _convertBGRA8888ToImage(CameraImage cameraImage) {
-    final plane = cameraImage.planes[0];
-    final width = cameraImage.width;
-    final height = cameraImage.height;
-
-    final image = img.Image(width: width, height: height);
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final index = y * plane.bytesPerRow + x * 4;
-        final b = plane.bytes[index];
-        final g = plane.bytes[index + 1];
-        final r = plane.bytes[index + 2];
-
-        image.setPixelRgb(x, y, r, g, b);
-      }
-    }
-
-    // DO NOT rotate or flip - ML Kit bounding boxes are in raw image coordinates
-    return image;
   }
 
   InputImage? _convertCameraImage(CameraImage image) {
