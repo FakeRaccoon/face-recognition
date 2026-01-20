@@ -310,7 +310,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         setState(() {
           _currentConfidence = null;
           _faceBoundingBox = null;
+          // Reset verification state when face is lost
+          _isVerificationComplete = false;
+          _consistentlyMatchedName = null;
         });
+        _firstConsistentMatchTime = null;
+        _animationController.reset();
       }
     } catch (e) {
       log('Error detecting faces: $e');
@@ -557,25 +562,103 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
             right: 0,
             child: Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  child: Text(
-                    statusText,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
+                if (_isVerificationComplete && _consistentlyMatchedName != null)
+                  Card(
+                    margin: const EdgeInsets.symmetric(horizontal: 40),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    color: Colors.white.withOpacity(0.9),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: const Color(0xFF00E676),
+                                width: 2,
+                              ),
+                              image: DecorationImage(
+                                fit: BoxFit.cover,
+                                image:
+                                    (() {
+                                          try {
+                                            final face = _recognitionService
+                                                .registeredFaces
+                                                .firstWhere(
+                                                  (f) =>
+                                                      f.name ==
+                                                      _consistentlyMatchedName,
+                                                );
+                                            if (face.faceBytes != null) {
+                                              return MemoryImage(
+                                                face.faceBytes!,
+                                              );
+                                            }
+                                          } catch (e) {
+                                            // Fallback
+                                          }
+                                          return const NetworkImage(
+                                            'https://via.placeholder.com/150',
+                                          ); // Ideally use a local asset
+                                        })()
+                                        as ImageProvider,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'Verified',
+                                style: TextStyle(
+                                  color: Color(0xFF00E676),
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _consistentlyMatchedName!,
+                                style: const TextStyle(
+                                  color: Colors.black87,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 20,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Text(
+                      statusText,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
-                ),
                 if (_consistentlyMatchedName != null &&
                     !_isVerificationComplete) ...[
                   const SizedBox(height: 20),
