@@ -39,7 +39,7 @@ class RecognitionResult {
 class FaceRecognitionService {
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
   static const int _inputSize = 112;
-  static const double _threshold = 0.1; // Very low threshold for debugging
+  static const double _threshold = 0.4; // Standard threshold for face matching
 
   Interpreter? _interpreter;
   List<int>? _outputShape;

@@ -1,8 +1,8 @@
+import 'dart:developer' show log;
 import 'dart:io';
-import 'dart:math';
+import 'dart:math' hide log;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
@@ -99,7 +99,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Error initializing recognition service: $e');
+      log('Error initializing recognition service: $e');
     }
   }
 
@@ -125,7 +125,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       await _cameraController!.startImageStream(_processCameraImage);
       if (mounted) setState(() {});
     } catch (e) {
-      debugPrint('Error initializing camera: $e');
+      log('Error initializing camera: $e');
     }
   }
 
@@ -152,28 +152,85 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         if (_lastRecognitionTime != null &&
             now.difference(_lastRecognitionTime!) <
                 const Duration(milliseconds: 500)) {
-          // Skip recognition, but still update face boxes for UI
-          for (final face in faces) {
-            faceInfos.add(DetectedFaceInfo(face: face));
-          }
-
-          if (mounted) {
-            setState(() {
-              _detectedFaces = faceInfos;
-              _debugLiveFaceBytes = currentLiveFaceBytes;
-            });
-          }
+          // Skip recognition, keep previous results to avoid flickering
           _isDetecting = false;
           return;
         }
         _lastRecognitionTime = now;
 
-        // For realtime, we need to skip recognition and rely on capture button
-        // The coordinate transformations are too complex for real-time
-        debugPrint(
-          'Realtime recognition skipped - use Capture button for accurate results',
+        // Get camera info for debug
+        final camera = cameras[_cameraIndex];
+        final sensorOrientation = camera.sensorOrientation;
+        final isFrontCamera = camera.lensDirection == CameraLensDirection.front;
+
+        log('\n=== REALTIME DEBUG ===');
+        log('┌─ Camera Info ─────────────');
+        log('│ Sensor orientation: $sensorOrientation°');
+        log('│ Front camera: $isFrontCamera');
+        log('│ Raw image: ${cameraImage.width}×${cameraImage.height}');
+        log('│ Preview size: ${_cameraController!.value.previewSize}');
+        log('└──────────────────────────');
+
+        log('┌─ Face Detection ───────────');
+        log('│ Faces detected: ${faces.length}');
+        if (faces.isNotEmpty) {
+          final bbox = faces[0].boundingBox;
+          log(
+            '│ Face bbox: L=${bbox.left.toInt()}, T=${bbox.top.toInt()}, R=${bbox.right.toInt()}, B=${bbox.bottom.toInt()}',
+          );
+        }
+        log('└──────────────────────────');
+
+        // Convert raw camera frame to upright image FIRST
+        final uprightImage = _convertCameraImageToUpright(cameraImage);
+        if (uprightImage == null) {
+          _isDetecting = false;
+          return;
+        }
+
+        log('Upright image: ${uprightImage.width}x${uprightImage.height}');
+
+        // For comparison - log what capture does
+        log(
+          'Note: Capture uses takePicture() which creates properly oriented JPEG',
         );
-        faceInfos.addAll(faces.map((face) => DetectedFaceInfo(face: face)));
+
+        // ML Kit detected faces on rotated image and returned upright bounding boxes
+        // Since we also have upright image, bounding boxes match directly
+        for (final face in faces) {
+          final croppedFace = _recognitionService.cropFace(
+            uprightImage,
+            recognition.Rect(
+              left: face.boundingBox.left,
+              top: face.boundingBox.top,
+              right: face.boundingBox.right,
+              bottom: face.boundingBox.bottom,
+            ),
+          );
+
+          if (croppedFace != null) {
+            // Store debug image for first face
+
+            log('Cropped face: ${croppedFace.width}x${croppedFace.height}');
+            final result = await _recognitionService.recognizeFace(croppedFace);
+            log(
+              'Recognition: name=${result?.name}, conf=${result?.confidence}, match=${result?.isMatch}',
+            );
+
+            faceInfos.add(
+              DetectedFaceInfo(
+                face: face,
+                recognizedName: result?.isMatch == true ? result?.name : null,
+                confidence: result?.isMatch == true ? result?.confidence : null,
+                bestMatchName: result?.name,
+                bestMatchScore: result?.confidence,
+              ),
+            );
+          } else {
+            log('Cropped face is null');
+            faceInfos.add(DetectedFaceInfo(face: face));
+          }
+        }
       } else {
         for (final face in faces) {
           faceInfos.add(DetectedFaceInfo(face: face));
@@ -187,7 +244,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Error detecting faces: $e');
+      log('Error detecting faces: $e');
     }
 
     _isDetecting = false;
@@ -199,28 +256,43 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       final sensorOrientation = camera.sensorOrientation;
       final isFrontCamera = camera.lensDirection == CameraLensDirection.front;
 
+      log(
+        'Converting to upright: sensorOrientation=$sensorOrientation, isFront=$isFrontCamera',
+      );
+
       // Convert to image first
       final rawImage = _convertCameraImageToImg(cameraImage);
-      if (rawImage == null) return null;
+      if (rawImage == null) {
+        log('FAILED: _convertCameraImageToImg returned null');
+        return null;
+      }
+
+      log('Raw image converted: ${rawImage.width}x${rawImage.height}');
 
       // Rotate image to upright based on sensor orientation
       img.Image uprightImage = rawImage;
       if (sensorOrientation != 0) {
+        log('Rotating by $sensorOrientation degrees...');
         // Rotate counter-clockwise to make it upright
         uprightImage = img.copyRotate(
           rawImage,
           angle: sensorOrientation.toDouble(),
         );
+        log('After rotation: ${uprightImage.width}x${uprightImage.height}');
       }
 
       // Flip horizontally for front camera to match mirror behavior
       if (isFrontCamera) {
+        log('Flipping horizontally for front camera...');
         uprightImage = img.flipHorizontal(uprightImage);
+        log('After flip: ${uprightImage.width}x${uprightImage.height}');
       }
 
+      log('SUCCESS: Upright image ready');
       return uprightImage;
-    } catch (e) {
-      debugPrint('Error converting camera image to upright: $e');
+    } catch (e, stackTrace) {
+      log('ERROR converting camera image to upright: $e');
+      log('Stack trace: $stackTrace');
       return null;
     }
   }
@@ -233,49 +305,91 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         return _convertBGRA8888ToImage(cameraImage);
       }
     } catch (e) {
-      debugPrint('Error converting camera image: $e');
+      log('Error converting camera image: $e');
     }
     return null;
   }
 
   img.Image? _convertYUV420ToImage(CameraImage cameraImage) {
-    final width = cameraImage.width;
-    final height = cameraImage.height;
+    final int width = cameraImage.width;
+    final int height = cameraImage.height;
     final image = img.Image(width: width, height: height);
 
     try {
-      final int uvRowStride = cameraImage.planes[1].bytesPerRow;
-      final int? uvPixelStride = cameraImage.planes[1].bytesPerPixel;
+      final int planeCount = cameraImage.planes.length;
+      log('YUV planes count: $planeCount, dims: ${width}x$height');
 
-      final yPlane = cameraImage.planes[0].bytes;
-      final uPlane = cameraImage.planes[1].bytes;
-      final vPlane = cameraImage.planes[2].bytes;
+      if (planeCount == 1) {
+        // NV21 single plane format: Y followed by interleaved VU
+        final bytes = cameraImage.planes[0].bytes;
+        final int ySize = width * height;
 
-      for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-          final int yIndex = y * cameraImage.planes[0].bytesPerRow + x;
-          // Basic YUV420 assumption: UV subsampled 2x2.
-          // For row stride and pixel stride usage:
-          final int uvIndex =
-              (y ~/ 2) * uvRowStride + (x ~/ 2) * (uvPixelStride ?? 1);
+        for (int y = 0; y < height; y++) {
+          for (int x = 0; x < width; x++) {
+            final int yIndex = y * width + x;
+            final int yValue = bytes[yIndex];
 
-          final yValue = yPlane[yIndex];
-          final uValue = uPlane[uvIndex];
-          final vValue = vPlane[uvIndex];
+            // VU data starts after Y plane, interleaved
+            final int uvIndex = ySize + (y ~/ 2) * width + (x ~/ 2) * 2;
+            final int vValue = bytes[uvIndex]; // V first in NV21
+            final int uValue = bytes[uvIndex + 1]; // U second
 
-          // YUV to RGB conversion
-          final r = (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
-          final g =
-              (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
-                  .clamp(0, 255)
-                  .toInt();
-          final b = (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
+            // YUV to RGB conversion
+            final r =
+                (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
+            final g =
+                (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
+                    .clamp(0, 255)
+                    .toInt();
+            final b =
+                (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
 
-          image.setPixelRgb(x, y, r, g, b);
+            image.setPixelRgb(x, y, r, g, b);
+          }
         }
+      } else if (planeCount >= 3) {
+        // YUV420 with separate planes
+        final yPlane = cameraImage.planes[0];
+        final uPlane = cameraImage.planes[1];
+        final vPlane = cameraImage.planes[2];
+
+        final int yRowStride = yPlane.bytesPerRow;
+        final int uvRowStride = uPlane.bytesPerRow;
+        final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
+
+        for (int y = 0; y < height; y++) {
+          for (int x = 0; x < width; x++) {
+            final int yIndex = y * yRowStride + x;
+            final int yValue = yPlane.bytes[yIndex];
+
+            final int uvY = y ~/ 2;
+            final int uvX = x ~/ 2;
+            final int uvIndex = uvY * uvRowStride + uvX * uvPixelStride;
+
+            final int uValue = uPlane.bytes[uvIndex];
+            final int vValue = vPlane.bytes[uvIndex];
+
+            final r =
+                (yValue + 1.370705 * (vValue - 128)).clamp(0, 255).toInt();
+            final g =
+                (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128))
+                    .clamp(0, 255)
+                    .toInt();
+            final b =
+                (yValue + 1.732446 * (uValue - 128)).clamp(0, 255).toInt();
+
+            image.setPixelRgb(x, y, r, g, b);
+          }
+        }
+      } else {
+        log('Unsupported plane count: $planeCount');
+        return null;
       }
     } catch (e) {
-      debugPrint('Error converting YUV420: $e');
+      log('Error converting YUV: $e');
+      log(
+        'Planes: ${cameraImage.planes.map((p) => 'len=${p.bytes.length}, row=${p.bytesPerRow}, pixel=${p.bytesPerPixel}').join(', ')}',
+      );
       return null;
     }
 
@@ -352,12 +466,17 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
     if (Platform.isAndroid &&
         format == InputImageFormat.nv21 &&
         image.planes.length > 1) {
-      // Concatenate all planes
-      final WriteBuffer allBytes = WriteBuffer();
+      // Manually concatenate all planes
+      final int totalLength = image.planes.fold<int>(
+        0,
+        (sum, plane) => sum + plane.bytes.length,
+      );
+      final Uint8List bytes = Uint8List(totalLength);
+      int offset = 0;
       for (final Plane plane in image.planes) {
-        allBytes.putUint8List(plane.bytes);
+        bytes.setRange(offset, offset + plane.bytes.length, plane.bytes);
+        offset += plane.bytes.length;
       }
-      final bytes = allBytes.done().buffer.asUint8List();
 
       return InputImage.fromBytes(
         bytes: bytes,
@@ -542,7 +661,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         _showSnackBar('No registered faces to compare');
       }
     } catch (e) {
-      debugPrint('Error capturing and recognizing: $e');
+      log('Error capturing and recognizing: $e');
       _showSnackBar('Error during capture');
     }
   }
@@ -557,7 +676,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         _capturedImageBytes = null;
       });
     } catch (e) {
-      debugPrint('Error resuming camera: $e');
+      log('Error resuming camera: $e');
     }
   }
 
@@ -619,7 +738,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
       _showSnackBar('Face registered for $name');
       setState(() {});
     } catch (e) {
-      debugPrint('Error registering face: $e');
+      log('Error registering face: $e');
       _showSnackBar('Error registering face');
     }
   }
@@ -749,7 +868,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Error switching camera: $e');
+      log('Error switching camera: $e');
     }
   }
 
