@@ -502,18 +502,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       );
     }
 
-    String statusText;
-    if (_recognitionService.registeredFaces.isEmpty) {
-      statusText = 'Please register a face';
-    } else if (_isVerificationComplete && _consistentlyMatchedName != null) {
-      statusText = 'Verified: $_consistentlyMatchedName';
-    } else if (_currentConfidence != null && _currentConfidence! >= 0.60) {
-      statusText = 'Verifying...';
-    } else if (_currentConfidence != null && _currentConfidence! < 0.60) {
-      statusText = 'Can not find similarity with registered face';
-    } else {
-      statusText = 'Position your face in the frame';
-    }
+    // Status text logic replaced by visual indicators and bottom bar
 
     Color statusColor = Colors.white;
     if (_currentConfidence != null) {
@@ -568,11 +557,14 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    color: Colors.white.withOpacity(0.9),
+                    color: Colors.white,
+                    elevation: 4,
                     child: Padding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16.0,
+                        vertical: 12.0,
+                      ),
                       child: Row(
-                        mainAxisSize: MainAxisSize.min,
                         children: [
                           Container(
                             width: 60,
@@ -580,8 +572,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: const Color(0xFF00E676),
-                                width: 2,
+                                color: Colors.grey.shade300,
+                                width: 1,
                               ),
                               image: DecorationImage(
                                 fit: BoxFit.cover,
@@ -605,68 +597,86 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                                           }
                                           return const NetworkImage(
                                             'https://via.placeholder.com/150',
-                                          ); // Ideally use a local asset
+                                          );
                                         })()
                                         as ImageProvider,
                               ),
                             ),
                           ),
                           const SizedBox(width: 16),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Text(
-                                'Verified',
-                                style: TextStyle(
-                                  color: Color(0xFF00E676),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _consistentlyMatchedName!.toUpperCase(),
+                                  style: const TextStyle(
+                                    color: Colors.black87,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 22,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _consistentlyMatchedName!,
-                                style: const TextStyle(
-                                  color: Colors.black87,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 20,
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade600,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ],
                       ),
                     ),
-                  )
-                else
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    child: Text(
-                      statusText,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
                   ),
+
                 if (_consistentlyMatchedName != null &&
-                    !_isVerificationComplete) ...[
-                  const SizedBox(height: 20),
-                  CircularProgressIndicator(
-                    value: _animationController.value,
-                    color: const Color(0xFF00E676),
+                    !_isVerificationComplete)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 20),
+                    child: CircularProgressIndicator(
+                      value: _animationController.value,
+                      color: const Color(0xFF00E676),
+                    ),
                   ),
-                ],
+
+                // Bottom Status Bar
+                Container(
+                  margin: const EdgeInsets.only(top: 20, left: 20, right: 20),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 16,
+                    horizontal: 24,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.8),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _recognitionService.registeredFaces.isEmpty
+                        ? 'Please register a face'
+                        : _isVerificationComplete &&
+                              _consistentlyMatchedName != null
+                        ? 'Verified, Welcome!'
+                        : _currentConfidence != null
+                        ? _currentConfidence! >= 0.60
+                              ? 'Verifying...'
+                              : 'Face Not Recognized'
+                        : 'Face Not Detected',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -706,10 +716,46 @@ class FacePainter extends CustomPainter {
       cameraLensDirection: cameraLensDirection,
     );
 
-    canvas.drawRect(rect, paint);
+    // Draw Corner Brackets instead of full Rect
+    final double cornerLength = rect.width * 0.2; // 20% of width
+    final double strokeWidth = 5.0;
 
-    // Draw corners individually for a better look (Optional)
-    // For now simple Box
+    paint
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round; // Update existing paint object
+
+    final Path path = Path();
+
+    // Top Left
+    path.moveTo(rect.left, rect.top + cornerLength);
+    path.lineTo(rect.left, rect.top + 10); // slightly rounded corner start
+    path.quadraticBezierTo(rect.left, rect.top, rect.left + 10, rect.top);
+    path.lineTo(rect.left + cornerLength, rect.top);
+
+    // Top Right
+    path.moveTo(rect.right - cornerLength, rect.top);
+    path.lineTo(rect.right - 10, rect.top);
+    path.quadraticBezierTo(rect.right, rect.top, rect.right, rect.top + 10);
+    path.lineTo(rect.right, rect.top + cornerLength);
+
+    // Bottom Right
+    path.moveTo(rect.right, rect.bottom - cornerLength);
+    path.lineTo(rect.right, rect.bottom - 10);
+    path.quadraticBezierTo(
+      rect.right,
+      rect.bottom,
+      rect.right - 10,
+      rect.bottom,
+    );
+    path.lineTo(rect.right - cornerLength, rect.bottom);
+
+    // Bottom Left
+    path.moveTo(rect.left + cornerLength, rect.bottom);
+    path.lineTo(rect.left + 10, rect.bottom);
+    path.quadraticBezierTo(rect.left, rect.bottom, rect.left, rect.bottom - 10);
+    path.lineTo(rect.left, rect.bottom - cornerLength);
+
+    canvas.drawPath(path, paint);
   }
 
   Rect _scaleRect({
