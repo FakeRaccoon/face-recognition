@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:face_detection/utils/image_converter_isolate.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart'; // Add scheduler import
+
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 
@@ -62,7 +64,7 @@ class DetectedFaceInfo {
 }
 
 class _FaceDetectionScreenState extends State<FaceDetectionScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late AnimationController _animationController;
   CameraController? _cameraController;
   bool _isDetecting = false;
@@ -71,9 +73,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   double? _currentConfidence;
 
   // Painting state
-  Rect? _faceBoundingBox;
+  // Painting state
+  Rect? _targetBoundingBox; // The latest detection result
+  Rect? _currentBoundingBox; // The interpolated value for display
   Size? _imageSize;
   InputImageRotation? _imageRotation;
+  late Ticker _ticker; // Ticker for smooth animation
 
   final recognition.FaceRecognitionService _recognitionService =
       recognition.FaceRecognitionService();
@@ -102,6 +107,43 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       vsync: this,
       duration: const Duration(seconds: 2),
     );
+
+    // Initialize ticker for smooth interpolation
+    _ticker = createTicker((elapsed) {
+      if (_targetBoundingBox != null) {
+        if (_currentBoundingBox == null) {
+          _currentBoundingBox = _targetBoundingBox;
+          return;
+        }
+
+        // Linear interpolation with 0.15 factor for smooth following
+        // We handle nullable rect lerp manually to be safe
+        final target = _targetBoundingBox!;
+        final current = _currentBoundingBox!;
+
+        // Check distance to avoid unnecessary repaints
+        final dist = (target.center - current.center).distance;
+        if (dist < 0.5 && (target.width - current.width).abs() < 0.5) {
+          return;
+        }
+
+        final newRect = Rect.lerp(current, target, 0.4);
+        if (newRect != null) {
+          setState(() {
+            _currentBoundingBox = newRect;
+          });
+        }
+      } else {
+        // If target is null (lost face), clear current
+        if (_currentBoundingBox != null) {
+          setState(() {
+            _currentBoundingBox = null;
+          });
+        }
+      }
+    });
+    _ticker.start();
+
     _initializeServices();
   }
 
@@ -151,7 +193,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     try {
       // Use original method for ML Kit detection (handles rotation properly)
-      final inputImage = _convertCameraImage(cameraImage);
+      final inputImage = await _convertCameraImage(cameraImage);
       if (inputImage == null) {
         _isDetecting = false;
         return;
@@ -177,12 +219,13 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       final List<DetectedFaceInfo> faceInfos = [];
 
       // Update UI state for painting
+      // NO setState here for bounding box anymore, let Ticker handle it
+      // ONLY update 'target'
       if (mounted) {
-        setState(() {
-          _imageSize = inputImage.metadata?.size;
-          _imageRotation = inputImage.metadata?.rotation;
-          _faceBoundingBox = primaryFace?.boundingBox;
-        });
+        // We still need to update metadata
+        _imageSize = inputImage.metadata?.size;
+        _imageRotation = inputImage.metadata?.rotation;
+        _targetBoundingBox = primaryFace?.boundingBox;
       }
 
       if (primaryFace != null) {
@@ -299,9 +342,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       }
 
       if (faces.isEmpty && mounted) {
+        // Just clear target, ticker will clear current
+        _targetBoundingBox = null;
+
         setState(() {
           _currentConfidence = null;
-          _faceBoundingBox = null;
+          // _faceBoundingBox = null; // handled by target
           // Reset verification state when face is lost
           _isVerificationComplete = false;
           _consistentlyMatchedName = null;
@@ -348,7 +394,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     }
   }
 
-  InputImage? _convertCameraImage(CameraImage image) {
+  Future<InputImage?> _convertCameraImage(CameraImage image) async {
     final camera = cameras[_cameraIndex];
     final sensorOrientation = camera.sensorOrientation;
     InputImageRotation? rotation;
@@ -380,7 +426,11 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     if (Platform.isAndroid && format == InputImageFormat.yuv420) {
       // Manually convert YUV420 planes to NV21 byte buffer for ML Kit
-      final nv21Bytes = _yuv420ToNv21(image);
+      // Run in background isolate to avoid blocking UI thread
+      final nv21Bytes = await _convertYUV420ToNv21Background(image);
+
+      if (nv21Bytes == null) return null;
+
       return InputImage.fromBytes(
         bytes: nv21Bytes,
         metadata: InputImageMetadata(
@@ -431,53 +481,35 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     );
   }
 
-  Uint8List _yuv420ToNv21(CameraImage image) {
-    final int width = image.width;
-    final int height = image.height;
+  Future<Uint8List?> _convertYUV420ToNv21Background(CameraImage image) async {
+    try {
+      final planes = image.planes.map((p) {
+        return CameraPlaneMessage(
+          bytes: p.bytes,
+          bytesPerRow: p.bytesPerRow,
+          bytesPerPixel: p.bytesPerPixel,
+        );
+      }).toList();
 
-    // NV21 size is Width * Height * 1.5
-    final int ySize = width * height;
-    final int uvSize = width * height ~/ 2;
-    final Uint8List nv21 = Uint8List(ySize + uvSize);
+      final message = CameraImageMessage(
+        planes: planes,
+        width: image.width,
+        height: image.height,
+        sensorOrientation: 0, // Not used for this conversion
+        isAndroid: true,
+        isIOS: false,
+      );
 
-    final yPlane = image.planes[0];
-    final uPlane = image.planes[1];
-    final vPlane = image.planes[2];
-
-    final int yRowStride = yPlane.bytesPerRow;
-    final int yPixelStride = yPlane.bytesPerPixel ?? 1;
-    final int uvRowStride = uPlane.bytesPerRow;
-    final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
-
-    // Copy Y plane
-    var nv21Index = 0;
-    for (int y = 0; y < height; y++) {
-      final int srcOffset = y * yRowStride;
-      for (int x = 0; x < width; x++) {
-        nv21[nv21Index++] = yPlane.bytes[srcOffset + x * yPixelStride];
-      }
+      return await compute(convertYUV420ToNV21, message);
+    } catch (e) {
+      log('Error converting YUV420 to NV21 in background: $e');
+      return null;
     }
-
-    // Copy UV planes (Interleaved V then U for NV21)
-    // UV planes are subsampled 2x2
-    for (int y = 0; y < height ~/ 2; y++) {
-      final int srcRowOffset = y * uvRowStride;
-      for (int x = 0; x < width ~/ 2; x++) {
-        final int srcPixelOffset = srcRowOffset + x * uvPixelStride;
-
-        final int v = vPlane.bytes[srcPixelOffset];
-        final int u = uPlane.bytes[srcPixelOffset];
-
-        nv21[nv21Index++] = v;
-        nv21[nv21Index++] = u;
-      }
-    }
-
-    return nv21;
   }
 
   @override
   void dispose() {
+    _ticker.dispose();
     _animationController.dispose();
     _cameraController?.dispose();
     _faceDetector.close();
@@ -520,12 +552,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           FullScreenCameraPreview(
             controller: _cameraController!,
             child:
-                _faceBoundingBox != null &&
+                _currentBoundingBox != null &&
                     _imageSize != null &&
                     _imageRotation != null
                 ? CustomPaint(
                     painter: FacePainter(
-                      boundingBox: _faceBoundingBox!,
+                      boundingBox: _currentBoundingBox!,
                       imageSize: _imageSize!,
                       rotation: _imageRotation!,
                       cameraLensDirection:

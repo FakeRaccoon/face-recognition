@@ -174,3 +174,57 @@ img.Image? decodeImageIsolate(Uint8List bytes) {
     return null;
   }
 }
+
+/// Function to be run in an Isolate for YUV conversion
+Uint8List? convertYUV420ToNV21(CameraImageMessage message) {
+  try {
+    final int width = message.width;
+    final int height = message.height;
+
+    // NV21 size is Width * Height * 1.5
+    final int ySize = width * height;
+    final int uvSize = width * height ~/ 2;
+    final Uint8List nv21 = Uint8List(ySize + uvSize);
+
+    // Reconstruct planes from message
+    // Note: CameraImageMessage structure might simplify planes to just bytes/strides
+    // We assume message.planes[0] is Y, [1] is U, [2] is V based on input construction
+
+    final yPlane = message.planes[0];
+    final uPlane = message.planes[1];
+    final vPlane = message.planes[2];
+
+    final int yRowStride = yPlane.bytesPerRow;
+    final int yPixelStride = yPlane.bytesPerPixel ?? 1;
+    final int uvRowStride = uPlane.bytesPerRow;
+    final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
+
+    // Copy Y plane
+    var nv21Index = 0;
+    for (int y = 0; y < height; y++) {
+      final int srcOffset = y * yRowStride;
+      for (int x = 0; x < width; x++) {
+        nv21[nv21Index++] = yPlane.bytes[srcOffset + x * yPixelStride];
+      }
+    }
+
+    // Copy UV planes (Interleaved V then U for NV21)
+    // UV planes are subsampled 2x2
+    for (int y = 0; y < height ~/ 2; y++) {
+      final int srcRowOffset = y * uvRowStride;
+      for (int x = 0; x < width ~/ 2; x++) {
+        final int srcPixelOffset = srcRowOffset + x * uvPixelStride;
+
+        final int v = vPlane.bytes[srcPixelOffset];
+        final int u = uPlane.bytes[srcPixelOffset];
+
+        nv21[nv21Index++] = v;
+        nv21[nv21Index++] = u;
+      }
+    }
+
+    return nv21;
+  } catch (e) {
+    return null;
+  }
+}

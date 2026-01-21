@@ -42,16 +42,12 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   Future<void> _initializeService() async {
     if (!_recognitionService.isInitialized) {
       await _recognitionService.initialize();
-      if (mounted) {
-        setState(() {});
-      }
-    } else {
-      // Even if initialized, we might need to refresh if faces were loaded externally
-      // or if this screen was rebuilt. But typically registeredFaces is a getter.
-      // Just to be safe, ensuring we reflect current state.
-      if (mounted) {
-        setState(() {});
-      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isRegistered = _recognitionService.registeredFaces.isNotEmpty;
+      });
     }
   }
 
