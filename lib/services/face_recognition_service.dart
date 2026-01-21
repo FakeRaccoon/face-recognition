@@ -3,6 +3,8 @@ import 'dart:math' hide log;
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:typed_data';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class RegisteredFace {
   final String name;
@@ -11,17 +13,19 @@ class RegisteredFace {
 
   RegisteredFace({required this.name, required this.embedding, this.faceBytes});
 
-  Map<String, dynamic> toJson() => {
-    'name': name,
-    'embedding': embedding,
-    // faceBytes is not persisted to JSON for simplicity in this demo,
-    // but could be base64 encoded if needed.
-  };
-
   factory RegisteredFace.fromJson(Map<String, dynamic> json) => RegisteredFace(
     name: json['name'] as String,
     embedding: (json['embedding'] as List).cast<double>(),
+    faceBytes: json['faceBytes'] != null
+        ? base64Decode(json['faceBytes'] as String)
+        : null,
   );
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'embedding': embedding,
+    'faceBytes': faceBytes != null ? base64Encode(faceBytes!) : null,
+  };
 }
 
 class RecognitionResult {
@@ -69,6 +73,7 @@ class FaceRecognitionService {
       log('MobileFaceNet model loaded successfully');
       log('Input shape: ${_interpreter!.getInputTensor(0).shape}');
       log('Output shape: $_outputShape');
+      await _loadFaces();
     } catch (e) {
       log('Error loading MobileFaceNet model: $e');
       rethrow;
@@ -265,7 +270,10 @@ class FaceRecognitionService {
       // 1. Check for same name (explicit update)
       facesToRemove.add(name);
 
-      // 2. Check for high similarity (implicit update/deduplication)
+      // 2. Check for high similarity (implicit update/deduplication) REMOVED
+      // We should not automatically remove other people just because they look similar.
+      // We only strictly enforce uniqueness by Name.
+      /*
       for (final face in _registeredFaces) {
         final similarity = _cosineSimilarity(embedding, face.embedding);
         if (similarity > _threshold) {
@@ -275,6 +283,7 @@ class FaceRecognitionService {
           facesToRemove.add(face.name);
         }
       }
+      */
 
       // Remove duplicates
       _registeredFaces.removeWhere((f) => facesToRemove.contains(f.name));
@@ -286,6 +295,7 @@ class FaceRecognitionService {
         RegisteredFace(name: name, embedding: embedding, faceBytes: faceBytes),
       );
       log('Registered face for: $name (embedding size: ${embedding.length})');
+      await _saveFaces();
     } else {
       log('Failed to get embedding for: $name');
     }
@@ -293,10 +303,12 @@ class FaceRecognitionService {
 
   void removeFace(String name) {
     _registeredFaces.removeWhere((f) => f.name == name);
+    _saveFaces();
   }
 
   void clearAllFaces() {
     _registeredFaces.clear();
+    _saveFaces();
   }
 
   Future<RecognitionResult?> recognizeFace(img.Image faceImage) async {
@@ -406,6 +418,32 @@ class FaceRecognitionService {
 
   double calculateSimilarity(List<double> emb1, List<double> emb2) {
     return _cosineSimilarity(emb1, emb2);
+  }
+
+  Future<void> _saveFaces() async {
+    final prefs = await SharedPreferences.getInstance();
+    final String facesJson = jsonEncode(
+      _registeredFaces.map((f) => f.toJson()).toList(),
+    );
+    await prefs.setString('registered_faces', facesJson);
+    log('Saved ${_registeredFaces.length} faces to storage');
+  }
+
+  Future<void> _loadFaces() async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? facesJson = prefs.getString('registered_faces');
+    if (facesJson != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(facesJson);
+        _registeredFaces.clear();
+        _registeredFaces.addAll(
+          decoded.map((json) => RegisteredFace.fromJson(json)),
+        );
+        log('Loaded ${_registeredFaces.length} faces from storage');
+      } catch (e) {
+        log('Error loading faces: $e');
+      }
+    }
   }
 }
 

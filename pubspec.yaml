@@ -36,6 +36,7 @@ dependencies:
   image: ^4.1.7
   image_picker: ^1.0.7
   path_provider: ^2.1.2
+  shared_preferences: ^2.5.4
   tflite_flutter: ^0.11.0
 
 dev_dependencies:

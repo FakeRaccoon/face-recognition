@@ -81,7 +81,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   bool _isRecognitionReady = false;
 
   // Verification state
-  DateTime? _firstConsistentMatchTime;
+
   String? _consistentlyMatchedName;
   bool _isVerificationComplete = false;
 
@@ -232,44 +232,36 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                 if (result.confidence >= 0.60) {
                   if (_consistentlyMatchedName == result.name) {
                     // Same person continuing to match
-                    if (_firstConsistentMatchTime == null) {
-                      _firstConsistentMatchTime = DateTime.now();
-                    } else {
-                      final duration = DateTime.now().difference(
-                        _firstConsistentMatchTime!,
-                      );
+                    if (!_isVerificationComplete) {
+                      _isVerificationComplete = true;
 
-                      if (duration.inSeconds >= 2 && !_isVerificationComplete) {
-                        _isVerificationComplete = true;
-
-                        if (mounted) {
-                          setState(() {
-                            // Force UI update
-                          });
-                        }
+                      if (mounted) {
+                        setState(() {
+                          // Force UI update
+                        });
                       }
                     }
                   } else {
                     // New person or first match
                     _consistentlyMatchedName = result.name;
-                    _firstConsistentMatchTime = DateTime.now();
-                    _isVerificationComplete = false; // Reset
-                    _animationController.forward(from: 0);
+                    _isVerificationComplete = true; // Immediate completion
+                    if (mounted) {
+                      setState(() {
+                        // Force UI update
+                      });
+                    }
                   }
                 } else {
-                  _firstConsistentMatchTime = null;
                   _consistentlyMatchedName = null;
                   _isVerificationComplete = false; // Reset
                   _animationController.reset();
                 }
               } else {
-                _firstConsistentMatchTime = null;
                 _consistentlyMatchedName = null;
                 _isVerificationComplete = false; // Reset
                 _animationController.reset();
               }
             } else {
-              _firstConsistentMatchTime = null;
               _consistentlyMatchedName = null;
               _isVerificationComplete = false; // Reset
               _animationController.reset();
@@ -291,7 +283,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
             );
           } else {
             faceInfos.add(DetectedFaceInfo(face: face));
-            _firstConsistentMatchTime = null;
+
             _consistentlyMatchedName = null;
             _isVerificationComplete = false; // Reset
             _animationController.reset();
@@ -314,7 +306,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           _isVerificationComplete = false;
           _consistentlyMatchedName = null;
         });
-        _firstConsistentMatchTime = null;
+
         _animationController.reset();
       }
     } catch (e) {
