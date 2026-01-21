@@ -86,17 +86,23 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   bool _isRecognitionReady = false;
 
   // Verification state
-
   String? _consistentlyMatchedName;
   bool _isVerificationComplete = false;
 
+  // Adaptive debounce settings
+  static const int _debounceActiveMs = 200; // Fast when matching
+  static const int _debounceIdleMs = 500; // Normal when searching
+  static const int _debounceVerifiedMs = 1000; // Slow after verification
+  int _currentDebounceMs = _debounceIdleMs;
+
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
-      enableContours: true,
-      enableLandmarks: true,
+      enableContours: false,
+      enableLandmarks: false,
       enableClassification: false,
       enableTracking: true,
-      performanceMode: FaceDetectorMode.accurate,
+      performanceMode: FaceDetectorMode.fast,
+      minFaceSize: 0.15,
     ),
   );
 
@@ -231,13 +237,27 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       }
 
       if (primaryFace != null) {
+        // Skip recognition for faces that are too small (< 5% of image area)
+        if (_imageSize != null) {
+          final faceArea =
+              primaryFace.boundingBox.width * primaryFace.boundingBox.height;
+          final imageArea = _imageSize!.width * _imageSize!.height;
+          if (faceArea / imageArea < 0.05) {
+            _isDetecting = false;
+            return;
+          }
+        }
+
         if (_isRecognitionReady &&
             _recognitionService.registeredFaces.isNotEmpty) {
-          // Debounce: only perform recognition every 500ms to avoid freezing
+          // Adaptive debounce based on verification state
+          final debounceMs = _isVerificationComplete
+              ? _debounceVerifiedMs
+              : _currentDebounceMs;
           final now = DateTime.now();
           if (_lastRecognitionTime != null &&
               now.difference(_lastRecognitionTime!) <
-                  const Duration(milliseconds: 500)) {
+                  Duration(milliseconds: debounceMs)) {
             // Skip recognition, keep previous results to avoid flickering
             _isDetecting = false;
             return;
@@ -275,6 +295,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
               if (result.isMatch) {
                 if (result.confidence >= 0.7) {
+                  // Speed up recognition when actively matching
+                  _currentDebounceMs = _debounceActiveMs;
                   if (_consistentlyMatchedName == result.name) {
                     // Same person continuing to match
                     if (!_isVerificationComplete) {
@@ -297,11 +319,13 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                     }
                   }
                 } else {
+                  _currentDebounceMs = _debounceIdleMs;
                   _consistentlyMatchedName = null;
                   _isVerificationComplete = false; // Reset
                   _animationController.reset();
                 }
               } else {
+                _currentDebounceMs = _debounceIdleMs;
                 _consistentlyMatchedName = null;
                 _isVerificationComplete = false; // Reset
                 _animationController.reset();
