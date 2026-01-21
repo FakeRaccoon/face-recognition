@@ -92,11 +92,11 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
-      enableContours: false,
+      enableContours: true,
       enableLandmarks: true,
       enableClassification: false,
       enableTracking: true,
-      performanceMode: FaceDetectorMode.fast,
+      performanceMode: FaceDetectorMode.accurate,
     ),
   );
 

@@ -1,10 +1,47 @@
 import 'dart:developer' show log;
 import 'dart:math' hide log;
+import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
-import 'dart:typed_data';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+
+const int _inputSize = 112;
+
+/// Top-level function for isolate preprocessing.
+/// Resizes image and creates normalized Float32List tensor.
+/// Runs in background isolate to avoid UI jank.
+Float32List? _preprocessImageIsolate(img.Image image) {
+  try {
+    // Resize to 112x112 using bilinear interpolation (faster than cubic)
+    final resized = img.copyResize(
+      image,
+      width: _inputSize,
+      height: _inputSize,
+      interpolation: img.Interpolation.linear,
+    );
+
+    // Create flat Float32List tensor [1 * 112 * 112 * 3]
+    // Using typed data is much faster than nested List<double>
+    final int tensorSize = _inputSize * _inputSize * 3;
+    final Float32List tensor = Float32List(tensorSize);
+
+    int idx = 0;
+    for (int y = 0; y < _inputSize; y++) {
+      for (int x = 0; x < _inputSize; x++) {
+        final pixel = resized.getPixel(x, y);
+        // Normalize to [-1, 1] range expected by MobileFaceNet
+        tensor[idx++] = (pixel.r.toDouble() - 127.5) / 127.5;
+        tensor[idx++] = (pixel.g.toDouble() - 127.5) / 127.5;
+        tensor[idx++] = (pixel.b.toDouble() - 127.5) / 127.5;
+      }
+    }
+
+    return tensor;
+  } catch (e) {
+    return null;
+  }
+}
 
 class RegisteredFace {
   final String name;
@@ -51,7 +88,6 @@ class FaceRecognitionService {
   FaceRecognitionService._internal();
 
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
-  static const int _inputSize = 112;
   static const double _threshold = 0.7;
   static const int _minFaceSize = 50;
 
@@ -99,8 +135,14 @@ class FaceRecognitionService {
     }
 
     try {
-      // Preprocess the image
-      final input = _preprocessImage(faceImage);
+      // Preprocess the image in a background isolate to avoid UI jank
+      final inputData = await compute(_preprocessImageIsolate, faceImage);
+      if (inputData == null) return null;
+
+      // Reshape Float32List to 4D tensor for TFLite
+      final input = inputData.buffer
+          .asFloat32List()
+          .reshape([1, _inputSize, _inputSize, 3]);
 
       // Prepare output buffer based on actual model output shape
       final outputSize = _embeddingSize;
@@ -119,115 +161,6 @@ class FaceRecognitionService {
       log('Error getting embedding: $e');
       return null;
     }
-  }
-
-  List<List<List<List<double>>>> _preprocessImage(img.Image image) {
-    // Step 1: Resize to 112x112 using Lanczos interpolation for better quality
-    final resized = img.copyResize(
-      image,
-      width: _inputSize,
-      height: _inputSize,
-      interpolation: img.Interpolation.cubic,
-    );
-
-    // Step 2: Apply contrast enhancement (histogram equalization on luminance)
-    final enhanced = _enhanceContrast(resized);
-
-    // Create input tensor [1, 112, 112, 3]
-    final input = List.generate(
-      1,
-      (_) => List.generate(
-        _inputSize,
-        (y) => List.generate(_inputSize, (x) {
-          final pixel = enhanced.getPixel(x, y);
-          // Normalize to [-1, 1]
-          return [
-            (pixel.r.toDouble() - 127.5) / 127.5,
-            (pixel.g.toDouble() - 127.5) / 127.5,
-            (pixel.b.toDouble() - 127.5) / 127.5,
-          ];
-        }),
-      ),
-    );
-
-    return input;
-  }
-
-  /// Apply adaptive contrast enhancement to improve face feature visibility
-  img.Image _enhanceContrast(img.Image image) {
-    // Convert to grayscale for histogram calculation
-    final int width = image.width;
-    final int height = image.height;
-
-    // Calculate luminance histogram
-    final histogram = List.filled(256, 0);
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final pixel = image.getPixel(x, y);
-        final luminance = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b)
-            .round();
-        histogram[luminance.clamp(0, 255)]++;
-      }
-    }
-
-    // Calculate cumulative distribution function (CDF)
-    final cdf = List.filled(256, 0);
-    cdf[0] = histogram[0];
-    for (int i = 1; i < 256; i++) {
-      cdf[i] = cdf[i - 1] + histogram[i];
-    }
-
-    // Find min non-zero CDF value
-    int cdfMin = 0;
-    for (int i = 0; i < 256; i++) {
-      if (cdf[i] > 0) {
-        cdfMin = cdf[i];
-        break;
-      }
-    }
-
-    final totalPixels = width * height;
-    final denominator = totalPixels - cdfMin;
-    if (denominator <= 0) return image;
-
-    // Create lookup table for histogram equalization
-    final lut = List.filled(256, 0);
-    for (int i = 0; i < 256; i++) {
-      lut[i] = (((cdf[i] - cdfMin) * 255) / denominator).round().clamp(0, 255);
-    }
-
-    // Apply equalization with blending (50% original, 50% equalized)
-    // This prevents over-enhancement
-    final result = img.Image(width: width, height: height);
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final pixel = image.getPixel(x, y);
-        final r = pixel.r.toInt();
-        final g = pixel.g.toInt();
-        final b = pixel.b.toInt();
-
-        // Calculate luminance ratio
-        final oldLum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(
-          0,
-          255,
-        );
-        final newLum = lut[oldLum];
-
-        if (oldLum > 0) {
-          final ratio = newLum / oldLum;
-          // Blend 60% original, 40% enhanced for subtle improvement
-          final blendRatio = 0.6 + 0.4 * ratio;
-          final newR = (r * blendRatio).round().clamp(0, 255);
-          final newG = (g * blendRatio).round().clamp(0, 255);
-          final newB = (b * blendRatio).round().clamp(0, 255);
-          result.setPixelRgb(x, y, newR, newG, newB);
-        } else {
-          result.setPixelRgb(x, y, r, g, b);
-        }
-      }
-    }
-
-    return result;
   }
 
   List<double> _normalizeEmbedding(List<double> embedding) {
