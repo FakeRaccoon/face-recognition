@@ -127,7 +127,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           return;
         }
 
-        final newRect = Rect.lerp(current, target, 0.4);
+        // Adaptive lerp: fast for large movements (snappy), smooth for small adjustments (stable)
+        final double lerpFactor = dist > 30.0 ? 0.7 : 0.2;
+        final newRect = Rect.lerp(current, target, lerpFactor);
         if (newRect != null) {
           setState(() {
             _currentBoundingBox = newRect;
@@ -272,7 +274,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               }
 
               if (result.isMatch) {
-                if (result.confidence >= 0.60) {
+                if (result.confidence >= 0.7) {
                   if (_consistentlyMatchedName == result.name) {
                     // Same person continuing to match
                     if (!_isVerificationComplete) {
@@ -530,7 +532,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     Color statusColor = Colors.white;
     if (_currentConfidence != null) {
-      if (_currentConfidence! >= 0.60) {
+      if (_currentConfidence! >= 0.7) {
         statusColor = const Color(0xFF00E676);
       } else {
         statusColor = Colors.redAccent;
@@ -688,7 +690,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                               _consistentlyMatchedName != null
                         ? 'Verified, Welcome!'
                         : _currentConfidence != null
-                        ? _currentConfidence! >= 0.60
+                        ? _currentConfidence! >= 0.7
                               ? 'Verifying...'
                               : 'Face Not Recognized'
                         : 'Face Not Detected',

@@ -52,7 +52,7 @@ class FaceRecognitionService {
 
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
   static const int _inputSize = 112;
-  static const double _threshold = 0.6;
+  static const double _threshold = 0.7;
   static const int _minFaceSize = 50;
 
   Interpreter? _interpreter;
