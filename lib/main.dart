@@ -68,6 +68,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   late AnimationController _animationController;
   CameraController? _cameraController;
   bool _isDetecting = false;
+  bool _isRecognizing = false;
   int _cameraIndex = 0;
   DateTime? _lastRecognitionTime;
   double? _currentConfidence;
@@ -238,6 +239,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         _targetBoundingBox = primaryFace?.boundingBox;
       }
 
+      // Release detection lock early - bounding box is updated
+      _isDetecting = false;
+
       if (primaryFace != null) {
         // Skip recognition for faces that are too small (< 5% of image area)
         if (_imageSize != null) {
@@ -245,10 +249,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               primaryFace.boundingBox.width * primaryFace.boundingBox.height;
           final imageArea = _imageSize!.width * _imageSize!.height;
           if (faceArea / imageArea < 0.05) {
-            _isDetecting = false;
             return;
           }
         }
+
+        // Don't start recognition if already running
+        if (_isRecognizing) return;
 
         if (_isRecognitionReady &&
             _recognitionService.registeredFaces.isNotEmpty) {
@@ -260,16 +266,15 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           if (_lastRecognitionTime != null &&
               now.difference(_lastRecognitionTime!) <
                   Duration(milliseconds: debounceMs)) {
-            // Skip recognition, keep previous results to avoid flickering
-            _isDetecting = false;
             return;
           }
           _lastRecognitionTime = now;
+          _isRecognizing = true;
 
           // Convert raw camera frame to upright image FIRST
           final uprightImage = await _convertCameraImageToUpright(cameraImage);
           if (uprightImage == null) {
-            _isDetecting = false;
+            _isRecognizing = false;
             return;
           }
 
@@ -364,6 +369,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               });
             }
           }
+          _isRecognizing = false;
         } else {
           faceInfos.add(DetectedFaceInfo(face: primaryFace));
         }
@@ -385,9 +391,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       }
     } catch (e) {
       log('Error detecting faces: $e');
+      _isDetecting = false;
+      _isRecognizing = false;
     }
-
-    _isDetecting = false;
   }
 
   Future<img.Image?> _convertCameraImageToUpright(
