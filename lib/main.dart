@@ -72,6 +72,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   DateTime? _lastRecognitionTime;
   double? _currentConfidence;
 
+  final _confidenceThreshold = 0.75;
+
   // Painting state
   // Painting state
   Rect? _targetBoundingBox; // The latest detection result
@@ -294,7 +296,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               }
 
               if (result.isMatch) {
-                if (result.confidence >= 0.8) {
+                if (result.confidence >= _confidenceThreshold) {
                   // Speed up recognition when actively matching
                   _currentDebounceMs = _debounceActiveMs;
                   if (_consistentlyMatchedName == result.name) {
@@ -556,7 +558,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     Color statusColor = Colors.white;
     if (_currentConfidence != null) {
-      if (_currentConfidence! >= 0.8) {
+      if (_currentConfidence! >= _confidenceThreshold) {
         statusColor = const Color(0xFF00E676);
       } else {
         statusColor = Colors.redAccent;
@@ -755,7 +757,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                               _consistentlyMatchedName != null
                         ? 'Verified, Welcome!'
                         : _currentConfidence != null
-                        ? _currentConfidence! >= 0.8
+                        ? _currentConfidence! >= _confidenceThreshold
                               ? 'Verifying...'
                               : 'Face Not Recognized'
                         : 'Face Not Detected',

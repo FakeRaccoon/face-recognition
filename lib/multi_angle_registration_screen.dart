@@ -14,17 +14,7 @@ import 'package:face_detection/services/face_recognition_service.dart'
     as recognition;
 import 'package:face_detection/utils/image_converter_isolate.dart';
 
-enum CaptureAngle {
-  front,
-  left,
-  right,
-  up,
-  down,
-  upLeft,
-  upRight,
-  downLeft,
-  downRight,
-}
+enum CaptureAngle { front, left, right, up, down }
 
 class MultiAngleRegistrationScreen extends StatefulWidget {
   const MultiAngleRegistrationScreen({super.key});
@@ -201,8 +191,10 @@ class _MultiAngleRegistrationScreenState
   }
 
   bool _isAngleCorrect(double yaw, double pitch, CaptureAngle targetAngle) {
-    const double mainAngleThreshold = 20.0;
-    const double centerThreshold = 15.0;
+    const double mainAngleThreshold =
+        15.0; // Reduced from 20 to make it easier but distinct
+    const double centerThreshold =
+        10.0; // Tightened from 15 for better frontal alignment
 
     switch (targetAngle) {
       case CaptureAngle.front:
@@ -219,18 +211,6 @@ class _MultiAngleRegistrationScreenState
 
       case CaptureAngle.down:
         return pitch < -mainAngleThreshold && yaw.abs() <= centerThreshold;
-
-      case CaptureAngle.upLeft:
-        return yaw > mainAngleThreshold && pitch > mainAngleThreshold;
-
-      case CaptureAngle.upRight:
-        return yaw < -mainAngleThreshold && pitch > mainAngleThreshold;
-
-      case CaptureAngle.downLeft:
-        return yaw > mainAngleThreshold && pitch < -mainAngleThreshold;
-
-      case CaptureAngle.downRight:
-        return yaw < -mainAngleThreshold && pitch < -mainAngleThreshold;
     }
   }
 
@@ -455,14 +435,6 @@ class _MultiAngleRegistrationScreenState
         return 'Look Up';
       case CaptureAngle.down:
         return 'Look Down';
-      case CaptureAngle.upLeft:
-        return 'Look Up & Left';
-      case CaptureAngle.upRight:
-        return 'Look Up & Right';
-      case CaptureAngle.downLeft:
-        return 'Look Down & Left';
-      case CaptureAngle.downRight:
-        return 'Look Down & Right';
     }
   }
 
@@ -478,14 +450,6 @@ class _MultiAngleRegistrationScreenState
         return Icons.arrow_upward;
       case CaptureAngle.down:
         return Icons.arrow_downward;
-      case CaptureAngle.upLeft:
-        return Icons.north_west;
-      case CaptureAngle.upRight:
-        return Icons.north_east;
-      case CaptureAngle.downLeft:
-        return Icons.south_west;
-      case CaptureAngle.downRight:
-        return Icons.south_east;
     }
   }
 

@@ -6,14 +6,14 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const int _inputSize = 112;
+const int _inputSize = 160;
 
 /// Top-level function for isolate preprocessing.
 /// Resizes image and creates normalized Float32List tensor.
 /// Runs in background isolate to avoid UI jank.
 Float32List? _preprocessImageIsolate(img.Image image) {
   try {
-    // Resize to 112x112 using bilinear interpolation (faster than cubic)
+    // Resize to 160x160 using bilinear interpolation (faster than cubic)
     final resized = img.copyResize(
       image,
       width: _inputSize,
@@ -21,7 +21,7 @@ Float32List? _preprocessImageIsolate(img.Image image) {
       interpolation: img.Interpolation.linear,
     );
 
-    // Create flat Float32List tensor [1 * 112 * 112 * 3]
+    // Create flat Float32List tensor [1 * 160 * 160 * 3]
     // Using typed data is much faster than nested List<double>
     final int tensorSize = _inputSize * _inputSize * 3;
     final Float32List tensor = Float32List(tensorSize);
@@ -30,7 +30,7 @@ Float32List? _preprocessImageIsolate(img.Image image) {
     for (int y = 0; y < _inputSize; y++) {
       for (int x = 0; x < _inputSize; x++) {
         final pixel = resized.getPixel(x, y);
-        // Normalize to [-1, 1] range expected by MobileFaceNet
+        // Normalize to [-1, 1] range expected by FaceNet
         tensor[idx++] = (pixel.r.toDouble() - 127.5) / 127.5;
         tensor[idx++] = (pixel.g.toDouble() - 127.5) / 127.5;
         tensor[idx++] = (pixel.b.toDouble() - 127.5) / 127.5;
@@ -109,8 +109,9 @@ class FaceRecognitionService {
 
   FaceRecognitionService._internal();
 
-  static const String _modelPath = 'assets/models/mobilefacenet.tflite';
-  static const double _threshold = 0.8;
+  static const String _modelPath = 'assets/models/facenet.tflite';
+  static const double _threshold =
+      0.75; // Adjusted for FaceNet (usually slightly lower)
   static const int _minFaceSize = 50;
 
   Interpreter? _interpreter;
