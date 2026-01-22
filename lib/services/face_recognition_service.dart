@@ -101,7 +101,11 @@ class FaceRecognitionService {
 
   Future<void> initialize() async {
     try {
-      _interpreter = await Interpreter.fromAsset(_modelPath);
+      final options = InterpreterOptions();
+
+      options.addDelegate(GpuDelegateV2());
+
+      _interpreter = await Interpreter.fromAsset(_modelPath, options: options);
 
       // Get actual output shape from the model
       final outputTensor = _interpreter!.getOutputTensor(0);
@@ -140,9 +144,12 @@ class FaceRecognitionService {
       if (inputData == null) return null;
 
       // Reshape Float32List to 4D tensor for TFLite
-      final input = inputData.buffer
-          .asFloat32List()
-          .reshape([1, _inputSize, _inputSize, 3]);
+      final input = inputData.buffer.asFloat32List().reshape([
+        1,
+        _inputSize,
+        _inputSize,
+        3,
+      ]);
 
       // Prepare output buffer based on actual model output shape
       final outputSize = _embeddingSize;

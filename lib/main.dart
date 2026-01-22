@@ -179,7 +179,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     _cameraController = CameraController(
       cameras[_cameraIndex],
-      ResolutionPreset.medium,
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid
           ? ImageFormatGroup.nv21
