@@ -101,8 +101,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       enableLandmarks: false,
       enableClassification: false,
       enableTracking: true,
-      performanceMode: FaceDetectorMode.fast,
-      minFaceSize: 0.15,
+      performanceMode: FaceDetectorMode.fast, // Better angle detection
+      minFaceSize: 0.08, // Smaller to catch angled faces
     ),
   );
 
@@ -556,7 +556,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     Color statusColor = Colors.white;
     if (_currentConfidence != null) {
-      if (_currentConfidence! >= 0.7) {
+      if (_currentConfidence! >= 0.75) {
         statusColor = const Color(0xFF00E676);
       } else {
         statusColor = Colors.redAccent;
@@ -714,7 +714,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                               _consistentlyMatchedName != null
                         ? 'Verified, Welcome!'
                         : _currentConfidence != null
-                        ? _currentConfidence! >= 0.7
+                        ? _currentConfidence! >= 0.75
                               ? 'Verifying...'
                               : 'Face Not Recognized'
                         : 'Face Not Detected',

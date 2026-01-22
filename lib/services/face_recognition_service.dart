@@ -45,22 +45,43 @@ Float32List? _preprocessImageIsolate(img.Image image) {
 
 class RegisteredFace {
   final String name;
-  final List<double> embedding;
+  final List<List<double>> embeddings; // Multiple embeddings for different angles
   final Uint8List? faceBytes;
 
-  RegisteredFace({required this.name, required this.embedding, this.faceBytes});
+  RegisteredFace({
+    required this.name,
+    required this.embeddings,
+    this.faceBytes,
+  });
 
-  factory RegisteredFace.fromJson(Map<String, dynamic> json) => RegisteredFace(
-    name: json['name'] as String,
-    embedding: (json['embedding'] as List).cast<double>(),
-    faceBytes: json['faceBytes'] != null
-        ? base64Decode(json['faceBytes'] as String)
-        : null,
-  );
+  // Backward-compatible factory: handles both old (single) and new (multiple) format
+  factory RegisteredFace.fromJson(Map<String, dynamic> json) {
+    List<List<double>> embeddings;
+
+    if (json.containsKey('embeddings')) {
+      // New format: multiple embeddings
+      embeddings = (json['embeddings'] as List)
+          .map((e) => (e as List).cast<double>())
+          .toList();
+    } else if (json.containsKey('embedding')) {
+      // Old format: single embedding - wrap in list for compatibility
+      embeddings = [(json['embedding'] as List).cast<double>()];
+    } else {
+      embeddings = [];
+    }
+
+    return RegisteredFace(
+      name: json['name'] as String,
+      embeddings: embeddings,
+      faceBytes: json['faceBytes'] != null
+          ? base64Decode(json['faceBytes'] as String)
+          : null,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'name': name,
-    'embedding': embedding,
+    'embeddings': embeddings,
     'faceBytes': faceBytes != null ? base64Encode(faceBytes!) : null,
   };
 }
@@ -199,45 +220,40 @@ class FaceRecognitionService {
     return dotProduct;
   }
 
+  /// Register a face with a single image (legacy method, wraps in list)
   Future<void> registerFace(String name, img.Image faceImage) async {
-    final embedding = await getEmbedding(faceImage);
-    if (embedding != null) {
-      // Check if this face is already registered (by similarity)
-      // If found, we'll remove the old one and replace it with this new one
-      // effectively updating the registration.
-      List<String> facesToRemove = [];
+    await registerFaceMultiAngle(name, [faceImage], faceImage);
+  }
 
-      // 1. Check for same name (explicit update)
-      facesToRemove.add(name);
+  /// Register a face with multiple angle images for better recognition
+  Future<void> registerFaceMultiAngle(
+    String name,
+    List<img.Image> faceImages,
+    img.Image primaryFaceImage,
+  ) async {
+    final List<List<double>> embeddings = [];
 
-      // 2. Check for high similarity (implicit update/deduplication) REMOVED
-      // We should not automatically remove other people just because they look similar.
-      // We only strictly enforce uniqueness by Name.
-      /*
-      for (final face in _registeredFaces) {
-        final similarity = _cosineSimilarity(embedding, face.embedding);
-        if (similarity > _threshold) {
-          log(
-            'Found existing face "${face.name}" with similarity ${similarity.toStringAsFixed(3)}. Updating...',
-          );
-          facesToRemove.add(face.name);
-        }
+    for (final faceImage in faceImages) {
+      final embedding = await getEmbedding(faceImage);
+      if (embedding != null) {
+        embeddings.add(embedding);
       }
-      */
+    }
 
-      // Remove duplicates
-      _registeredFaces.removeWhere((f) => facesToRemove.contains(f.name));
+    if (embeddings.isNotEmpty) {
+      // Remove existing face with same name
+      _registeredFaces.removeWhere((f) => f.name == name);
 
-      // Encode image for display
-      final faceBytes = img.encodePng(faceImage);
+      // Encode primary image for display
+      final faceBytes = img.encodePng(primaryFaceImage);
 
       _registeredFaces.add(
-        RegisteredFace(name: name, embedding: embedding, faceBytes: faceBytes),
+        RegisteredFace(name: name, embeddings: embeddings, faceBytes: faceBytes),
       );
-      log('Registered face for: $name (embedding size: ${embedding.length})');
+      log('Registered face for: $name (${embeddings.length} embeddings)');
       await _saveFaces();
     } else {
-      log('Failed to get embedding for: $name');
+      log('Failed to get any embeddings for: $name');
     }
   }
 
@@ -267,13 +283,21 @@ class FaceRecognitionService {
     double bestSimilarity = -1;
 
     for (final registered in _registeredFaces) {
-      final similarity = _cosineSimilarity(embedding, registered.embedding);
+      // Compare against all stored embeddings, take max similarity
+      double maxSimilarityForPerson = -1;
+      for (final storedEmbedding in registered.embeddings) {
+        final similarity = _cosineSimilarity(embedding, storedEmbedding);
+        if (similarity > maxSimilarityForPerson) {
+          maxSimilarityForPerson = similarity;
+        }
+      }
+
       log(
-        'Similarity with ${registered.name}: ${similarity.toStringAsFixed(3)}',
+        'Similarity with ${registered.name}: ${maxSimilarityForPerson.toStringAsFixed(3)} (from ${registered.embeddings.length} embeddings)',
       );
 
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
+      if (maxSimilarityForPerson > bestSimilarity) {
+        bestSimilarity = maxSimilarityForPerson;
         bestMatch = registered.name;
       }
     }
