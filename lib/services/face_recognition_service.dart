@@ -109,7 +109,7 @@ class FaceRecognitionService {
 
   FaceRecognitionService._internal();
 
-  static const String _modelPath = 'assets/models/facenet.tflite';
+  static const String _modelPath = 'assets/models/facenet_big.tflite';
   static const double _threshold =
       0.75; // Adjusted for FaceNet (usually slightly lower)
   static const int _minFaceSize = 50;
@@ -405,11 +405,33 @@ class FaceRecognitionService {
     if (facesJson != null) {
       try {
         final List<dynamic> decoded = jsonDecode(facesJson);
+        final List<RegisteredFace> loadedFaces = decoded
+            .map((json) => RegisteredFace.fromJson(json))
+            .toList();
+
+        final int currentEmbeddingSize = _embeddingSize;
+        final List<RegisteredFace> validFaces = [];
+        bool hasChanges = false;
+
+        for (final face in loadedFaces) {
+          if (face.embeddings.isNotEmpty &&
+              face.embeddings.first.length == currentEmbeddingSize) {
+            validFaces.add(face);
+          } else {
+            log(
+              'Removing incompatible face "${face.name}" (Embedding size: ${face.embeddings.firstOrNull?.length} vs Model: $currentEmbeddingSize)',
+            );
+            hasChanges = true;
+          }
+        }
+
         _registeredFaces.clear();
-        _registeredFaces.addAll(
-          decoded.map((json) => RegisteredFace.fromJson(json)),
-        );
-        log('Loaded ${_registeredFaces.length} faces from storage');
+        _registeredFaces.addAll(validFaces);
+        log('Loaded ${_registeredFaces.length} valid faces from storage');
+
+        if (hasChanges) {
+          await _saveFaces(); // Save the cleaned list
+        }
       } catch (e) {
         log('Error loading faces: $e');
       }
