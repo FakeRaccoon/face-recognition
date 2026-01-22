@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 
@@ -13,7 +14,17 @@ import 'package:face_detection/services/face_recognition_service.dart'
     as recognition;
 import 'package:face_detection/utils/image_converter_isolate.dart';
 
-enum CaptureAngle { front, left, right, up, down }
+enum CaptureAngle {
+  front,
+  left,
+  right,
+  up,
+  down,
+  upLeft,
+  upRight,
+  downLeft,
+  downRight,
+}
 
 class MultiAngleRegistrationScreen extends StatefulWidget {
   const MultiAngleRegistrationScreen({super.key});
@@ -40,7 +51,7 @@ class _MultiAngleRegistrationScreenState
       enableClassification: false,
       enableTracking: true,
       performanceMode: FaceDetectorMode.fast,
-      minFaceSize: 0.2,
+      minFaceSize: 0.1, // Smaller face size to allow more rotation
     ),
   );
 
@@ -48,12 +59,12 @@ class _MultiAngleRegistrationScreenState
   CaptureAngle _currentAngle = CaptureAngle.front;
   final Map<CaptureAngle, img.Image> _capturedFaces = {};
 
-  // Stability tracking for auto-capture
+  // Stability tracking
   bool _isInCorrectPosition = false;
   DateTime? _positionStableStartTime;
-  static const Duration _stabilityDuration = Duration(milliseconds: 1000);
+  static const Duration _stabilityDuration = Duration(milliseconds: 800);
 
-  // Face detection state
+  // Debug/Feedback state
   Rect? _faceBoundingBox;
   double? _currentYaw;
   double? _currentPitch;
@@ -99,7 +110,10 @@ class _MultiAngleRegistrationScreenState
 
   @override
   void dispose() {
-    _cameraController?.stopImageStream();
+    try {
+      // Stop stream if it might be running, ignore error if not
+      _cameraController?.stopImageStream();
+    } catch (_) {}
     _cameraController?.dispose();
     _faceDetector.close();
     super.dispose();
@@ -124,24 +138,22 @@ class _MultiAngleRegistrationScreenState
             _faceBoundingBox = null;
             _isInCorrectPosition = false;
             _positionStableStartTime = null;
-            _currentYaw = null;
-            _currentPitch = null;
           });
         }
         _isProcessing = false;
         return;
       }
 
-      // Get the primary (largest) face
       final face = faces.reduce(
-        (a, b) => (a.boundingBox.width * a.boundingBox.height) >
+        (a, b) =>
+            (a.boundingBox.width * a.boundingBox.height) >
                 (b.boundingBox.width * b.boundingBox.height)
             ? a
             : b,
       );
 
-      final yaw = face.headEulerAngleY; // Left/right rotation
-      final pitch = face.headEulerAngleX; // Up/down rotation
+      final yaw = face.headEulerAngleY ?? 0;
+      final pitch = face.headEulerAngleX ?? 0;
 
       if (mounted) {
         setState(() {
@@ -151,12 +163,12 @@ class _MultiAngleRegistrationScreenState
         });
       }
 
-      // Check if face is in correct position for current angle
       final isCorrect = _isAngleCorrect(yaw, pitch, _currentAngle);
 
       if (isCorrect) {
         if (!_isInCorrectPosition) {
           _positionStableStartTime = DateTime.now();
+          HapticFeedback.selectionClick();
         }
 
         if (mounted) {
@@ -165,12 +177,11 @@ class _MultiAngleRegistrationScreenState
           });
         }
 
-        // Check if stable for enough time
         if (_positionStableStartTime != null) {
-          final stableDuration =
-              DateTime.now().difference(_positionStableStartTime!);
+          final stableDuration = DateTime.now().difference(
+            _positionStableStartTime!,
+          );
           if (stableDuration >= _stabilityDuration) {
-            // Auto-capture!
             await _captureCurrentAngle(cameraImage);
           }
         }
@@ -189,20 +200,37 @@ class _MultiAngleRegistrationScreenState
     _isProcessing = false;
   }
 
-  bool _isAngleCorrect(double? yaw, double? pitch, CaptureAngle targetAngle) {
-    if (yaw == null || pitch == null) return false;
+  bool _isAngleCorrect(double yaw, double pitch, CaptureAngle targetAngle) {
+    const double mainAngleThreshold = 20.0;
+    const double centerThreshold = 15.0;
 
     switch (targetAngle) {
       case CaptureAngle.front:
-        return yaw.abs() <= 10 && pitch.abs() <= 10;
+        return yaw.abs() <= centerThreshold && pitch.abs() <= centerThreshold;
+
       case CaptureAngle.left:
-        return yaw >= 30 && yaw <= 55 && pitch.abs() <= 15;
+        return yaw > mainAngleThreshold && pitch.abs() <= centerThreshold;
+
       case CaptureAngle.right:
-        return yaw <= -30 && yaw >= -55 && pitch.abs() <= 15;
+        return yaw < -mainAngleThreshold && pitch.abs() <= centerThreshold;
+
       case CaptureAngle.up:
-        return yaw.abs() <= 15 && pitch >= 15 && pitch <= 35;
+        return pitch > mainAngleThreshold && yaw.abs() <= centerThreshold;
+
       case CaptureAngle.down:
-        return yaw.abs() <= 15 && pitch <= -15 && pitch >= -35;
+        return pitch < -mainAngleThreshold && yaw.abs() <= centerThreshold;
+
+      case CaptureAngle.upLeft:
+        return yaw > mainAngleThreshold && pitch > mainAngleThreshold;
+
+      case CaptureAngle.upRight:
+        return yaw < -mainAngleThreshold && pitch > mainAngleThreshold;
+
+      case CaptureAngle.downLeft:
+        return yaw > mainAngleThreshold && pitch < -mainAngleThreshold;
+
+      case CaptureAngle.downRight:
+        return yaw < -mainAngleThreshold && pitch < -mainAngleThreshold;
     }
   }
 
@@ -210,14 +238,13 @@ class _MultiAngleRegistrationScreenState
     if (_capturedFaces.containsKey(_currentAngle)) return;
 
     try {
-      // Convert camera image to upright image
+      HapticFeedback.mediumImpact();
+
       final uprightImage = await _convertCameraImageToUpright(cameraImage);
       if (uprightImage == null) return;
 
-      // Get the face bounding box
       if (_faceBoundingBox == null) return;
 
-      // Crop the face
       final croppedFace = _recognitionService.cropFace(
         uprightImage,
         recognition.Rect(
@@ -230,12 +257,9 @@ class _MultiAngleRegistrationScreenState
 
       if (croppedFace == null) return;
 
-      // Store the captured face
       _capturedFaces[_currentAngle] = croppedFace;
+      // log('Captured ${_currentAngle.name} angle');
 
-      log('Captured ${_currentAngle.name} angle');
-
-      // Move to next angle or finish
       if (mounted) {
         setState(() {
           _isInCorrectPosition = false;
@@ -243,6 +267,7 @@ class _MultiAngleRegistrationScreenState
         });
       }
 
+      await Future.delayed(const Duration(milliseconds: 200)); // Pause slightly
       _advanceToNextAngle();
     } catch (e) {
       log('Error capturing face: $e');
@@ -260,42 +285,33 @@ class _MultiAngleRegistrationScreenState
         });
       }
     } else {
-      // All angles captured - prompt for name
       _finishRegistration();
     }
   }
 
   Future<void> _finishRegistration() async {
-    // Stop camera processing while saving
     setState(() {
       _isSaving = true;
     });
 
-    // Stop camera stream
     await _cameraController?.stopImageStream();
 
-    // Prompt for name
     if (!mounted) return;
 
     final name = await _showNameInputDialog();
     if (name == null || name.isEmpty) {
-      // User cancelled - restart camera
-      await _cameraController?.startImageStream(_processCameraImage);
-      if (mounted) {
-        setState(() {
-          _isSaving = false;
-        });
-      }
+      // Logic to restart or exit?
+      // Let's restart for now or just allow re-entry
+      if (mounted) Navigator.pop(context);
       return;
     }
 
-    // Register face with all captured angles
-    final faceImages = _capturedFaces.values.toList();
-    final primaryFace = _capturedFaces[CaptureAngle.front] ?? faceImages.first;
+    final allFaces = _capturedFaces.values.toList();
+    final primaryFace = _capturedFaces[CaptureAngle.front] ?? allFaces.first;
 
     await _recognitionService.registerFaceMultiAngle(
       name,
-      faceImages,
+      allFaces,
       primaryFace,
     );
 
@@ -303,10 +319,11 @@ class _MultiAngleRegistrationScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'Face registered successfully with ${faceImages.length} angles!'),
+            'Face registered successfully with ${allFaces.length} angles!',
+          ),
         ),
       );
-      Navigator.of(context).pop(true); // Return success
+      Navigator.of(context).pop(true);
     }
   }
 
@@ -339,6 +356,8 @@ class _MultiAngleRegistrationScreenState
     );
   }
 
+  // --- Helper Methods ---
+
   Future<InputImage?> _convertCameraImage(CameraImage image) async {
     final camera = cameras[_cameraIndex];
     final sensorOrientation = camera.sensorOrientation;
@@ -355,13 +374,9 @@ class _MultiAngleRegistrationScreenState
     }
 
     if (rotation == null) return null;
-
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
 
-    if (image.planes.isEmpty) return null;
-
-    // Handle NV21 with multiple planes
     if (Platform.isAndroid &&
         format == InputImageFormat.nv21 &&
         image.planes.length > 1) {
@@ -375,7 +390,6 @@ class _MultiAngleRegistrationScreenState
         bytes.setRange(offset, offset + plane.bytes.length, plane.bytes);
         offset += plane.bytes.length;
       }
-
       return InputImage.fromBytes(
         bytes: bytes,
         metadata: InputImageMetadata(
@@ -432,15 +446,23 @@ class _MultiAngleRegistrationScreenState
   String _getInstructionText() {
     switch (_currentAngle) {
       case CaptureAngle.front:
-        return 'Look straight at the camera';
+        return 'Look Straight';
       case CaptureAngle.left:
-        return 'Turn your head LEFT';
+        return 'Turn Left';
       case CaptureAngle.right:
-        return 'Turn your head RIGHT';
+        return 'Turn Right';
       case CaptureAngle.up:
-        return 'Tilt your head UP';
+        return 'Look Up';
       case CaptureAngle.down:
-        return 'Tilt your head DOWN';
+        return 'Look Down';
+      case CaptureAngle.upLeft:
+        return 'Look Up & Left';
+      case CaptureAngle.upRight:
+        return 'Look Up & Right';
+      case CaptureAngle.downLeft:
+        return 'Look Down & Left';
+      case CaptureAngle.downRight:
+        return 'Look Down & Right';
     }
   }
 
@@ -456,6 +478,14 @@ class _MultiAngleRegistrationScreenState
         return Icons.arrow_upward;
       case CaptureAngle.down:
         return Icons.arrow_downward;
+      case CaptureAngle.upLeft:
+        return Icons.north_west;
+      case CaptureAngle.upRight:
+        return Icons.north_east;
+      case CaptureAngle.downLeft:
+        return Icons.south_west;
+      case CaptureAngle.downRight:
+        return Icons.south_east;
     }
   }
 
@@ -464,230 +494,144 @@ class _MultiAngleRegistrationScreenState
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
+        title: const Text('Register Face Steps'),
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
-        title: const Text('Register Face'),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.of(context).pop(false),
-        ),
       ),
       body: _cameraController == null || !_cameraController!.value.isInitialized
           ? const Center(child: CircularProgressIndicator())
-          : _isSaving
-              ? const Center(
+          : Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(child: CameraPreview(_cameraController!)),
+
+                // Overlay Filter to focus attention
+                ColorFiltered(
+                  colorFilter: ColorFilter.mode(
+                    Colors.black.withOpacity(0.3),
+                    BlendMode.darken,
+                  ),
+                  child: Container(color: Colors.transparent),
+                ),
+
+                // Guide Box (only visual)
+                Center(
+                  child: Container(
+                    width: 300,
+                    height: 300,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _isInCorrectPosition
+                            ? Colors.green
+                            : Colors.white,
+                        width: 3,
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child:
+                        _isInCorrectPosition && _positionStableStartTime != null
+                        ? Center(
+                            child: CircularProgressIndicator(
+                              valueColor: const AlwaysStoppedAnimation(
+                                Colors.green,
+                              ),
+                            ),
+                          )
+                        : null,
+                  ),
+                ),
+
+                // Top Progress
+                Positioned(
+                  top: 20,
+                  left: 0,
+                  right: 0,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: CaptureAngle.values.map((angle) {
+                        final isCompleted = _capturedFaces.containsKey(angle);
+                        final isCurrent = angle == _currentAngle;
+                        return Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isCompleted
+                                ? Colors.green
+                                : (isCurrent ? Colors.white : Colors.white24),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+
+                // Bottom Instructions
+                Positioned(
+                  bottom: 50,
+                  left: 0,
+                  right: 0,
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      CircularProgressIndicator(color: Colors.white),
-                      SizedBox(height: 16),
+                      Icon(_getDirectionIcon(), size: 60, color: Colors.white),
+                      const SizedBox(height: 16),
                       Text(
-                        'Saving...',
-                        style: TextStyle(color: Colors.white, fontSize: 18),
+                        _getInstructionText().toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _isInCorrectPosition
+                            ? "HOLD STILL..."
+                            : "Align your face",
+                        style: TextStyle(
+                          color: _isInCorrectPosition
+                              ? Colors.greenAccent
+                              : Colors.white70,
+                          fontSize: 16,
+                        ),
+                      ),
+
+                      // Debug Text (Optional)
+                      const SizedBox(height: 20),
+                      Text(
+                        'Yaw: ${_currentYaw?.toStringAsFixed(1) ?? 0}  Pitch: ${_currentPitch?.toStringAsFixed(1) ?? 0}',
+                        style: const TextStyle(
+                          color: Colors.white30,
+                          fontSize: 10,
+                        ),
                       ),
                     ],
                   ),
-                )
-              : Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // Camera preview
-                    Center(
-                      child: CameraPreview(_cameraController!),
-                    ),
-
-                    // Face guide overlay
-                    CustomPaint(
-                      painter: FaceGuidePainter(
-                        isInPosition: _isInCorrectPosition,
-                        progress: _positionStableStartTime != null
-                            ? DateTime.now()
-                                    .difference(_positionStableStartTime!)
-                                    .inMilliseconds /
-                                _stabilityDuration.inMilliseconds
-                            : 0.0,
-                      ),
-                    ),
-
-                    // Progress indicator at top
-                    Positioned(
-                      top: 16,
-                      left: 0,
-                      right: 0,
-                      child: _buildProgressIndicator(),
-                    ),
-
-                    // Instructions at bottom
-                    Positioned(
-                      bottom: 80,
-                      left: 0,
-                      right: 0,
-                      child: _buildInstructions(),
-                    ),
-
-                    // Debug info (optional)
-                    if (kDebugMode)
-                      Positioned(
-                        bottom: 160,
-                        left: 16,
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            'Yaw: ${_currentYaw?.toStringAsFixed(1) ?? '-'}°\n'
-                            'Pitch: ${_currentPitch?.toStringAsFixed(1) ?? '-'}°',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
                 ),
-    );
-  }
 
-  Widget _buildProgressIndicator() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: CaptureAngle.values.map((angle) {
-        final isCompleted = _capturedFaces.containsKey(angle);
-        final isCurrent = angle == _currentAngle;
-
-        return Container(
-          width: 40,
-          height: 40,
-          margin: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: isCompleted
-                ? Colors.green
-                : isCurrent
-                    ? Colors.deepPurple
-                    : Colors.grey.shade700,
-            border: isCurrent
-                ? Border.all(color: Colors.white, width: 2)
-                : null,
-          ),
-          child: Center(
-            child: isCompleted
-                ? const Icon(Icons.check, color: Colors.white, size: 20)
-                : Text(
-                    _getAngleLabel(angle),
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight:
-                          isCurrent ? FontWeight.bold : FontWeight.normal,
+                if (_isSaving)
+                  Container(
+                    color: Colors.black87,
+                    child: const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 20),
+                          Text(
+                            "Saving Face Data...",
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  String _getAngleLabel(CaptureAngle angle) {
-    switch (angle) {
-      case CaptureAngle.front:
-        return 'F';
-      case CaptureAngle.left:
-        return 'L';
-      case CaptureAngle.right:
-        return 'R';
-      case CaptureAngle.up:
-        return 'U';
-      case CaptureAngle.down:
-        return 'D';
-    }
-  }
-
-  Widget _buildInstructions() {
-    return Column(
-      children: [
-        Icon(
-          _getDirectionIcon(),
-          color: _isInCorrectPosition ? Colors.green : Colors.white,
-          size: 48,
-        ),
-        const SizedBox(height: 12),
-        Text(
-          _getInstructionText(),
-          style: TextStyle(
-            color: _isInCorrectPosition ? Colors.green : Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        if (_isInCorrectPosition) ...[
-          const SizedBox(height: 8),
-          const Text(
-            'Hold still...',
-            style: TextStyle(
-              color: Colors.green,
-              fontSize: 16,
+              ],
             ),
-          ),
-        ],
-      ],
     );
-  }
-}
-
-class FaceGuidePainter extends CustomPainter {
-  final bool isInPosition;
-  final double progress;
-
-  FaceGuidePainter({
-    required this.isInPosition,
-    required this.progress,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2 - 40);
-    final ovalWidth = size.width * 0.6;
-    final ovalHeight = ovalWidth * 1.3;
-
-    final rect = Rect.fromCenter(
-      center: center,
-      width: ovalWidth,
-      height: ovalHeight,
-    );
-
-    // Draw oval guide
-    final guidePaint = Paint()
-      ..color = isInPosition ? Colors.green : Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-
-    canvas.drawOval(rect, guidePaint);
-
-    // Draw progress arc when in position
-    if (isInPosition && progress > 0) {
-      final progressPaint = Paint()
-        ..color = Colors.green
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 6
-        ..strokeCap = StrokeCap.round;
-
-      canvas.drawArc(
-        rect.inflate(8),
-        -3.14159 / 2, // Start from top
-        2 * 3.14159 * progress.clamp(0.0, 1.0),
-        false,
-        progressPaint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(FaceGuidePainter oldDelegate) {
-    return oldDelegate.isInPosition != isInPosition ||
-        oldDelegate.progress != progress;
   }
 }

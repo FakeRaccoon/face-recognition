@@ -294,7 +294,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
               }
 
               if (result.isMatch) {
-                if (result.confidence >= 0.7) {
+                if (result.confidence >= 0.8) {
                   // Speed up recognition when actively matching
                   _currentDebounceMs = _debounceActiveMs;
                   if (_consistentlyMatchedName == result.name) {
@@ -556,7 +556,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
     Color statusColor = Colors.white;
     if (_currentConfidence != null) {
-      if (_currentConfidence! >= 0.75) {
+      if (_currentConfidence! >= 0.8) {
         statusColor = const Color(0xFF00E676);
       } else {
         statusColor = Colors.redAccent;
@@ -595,6 +595,47 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           ),
 
           // Overlay Texts
+          // Confidence Score Display (Top Right)
+          if (_currentConfidence != null)
+            Positioned(
+              top: 50, // Below AppBar
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.4), // Blend to UI
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.2),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.analytics_outlined,
+                      color: Colors.white.withOpacity(0.8),
+                      size: 14,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${(_currentConfidence! * 100).toStringAsFixed(1)}%',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.9),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           Positioned(
             bottom: 50,
             left: 0,
@@ -714,7 +755,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
                               _consistentlyMatchedName != null
                         ? 'Verified, Welcome!'
                         : _currentConfidence != null
-                        ? _currentConfidence! >= 0.75
+                        ? _currentConfidence! >= 0.8
                               ? 'Verifying...'
                               : 'Face Not Recognized'
                         : 'Face Not Detected',

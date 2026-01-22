@@ -45,7 +45,8 @@ Float32List? _preprocessImageIsolate(img.Image image) {
 
 class RegisteredFace {
   final String name;
-  final List<List<double>> embeddings; // Multiple embeddings for different angles
+  final List<List<double>>
+  embeddings; // Multiple embeddings for different angles
   final Uint8List? faceBytes;
 
   RegisteredFace({
@@ -109,7 +110,7 @@ class FaceRecognitionService {
   FaceRecognitionService._internal();
 
   static const String _modelPath = 'assets/models/mobilefacenet.tflite';
-  static const double _threshold = 0.7;
+  static const double _threshold = 0.8;
   static const int _minFaceSize = 50;
 
   Interpreter? _interpreter;
@@ -248,7 +249,11 @@ class FaceRecognitionService {
       final faceBytes = img.encodePng(primaryFaceImage);
 
       _registeredFaces.add(
-        RegisteredFace(name: name, embeddings: embeddings, faceBytes: faceBytes),
+        RegisteredFace(
+          name: name,
+          embeddings: embeddings,
+          faceBytes: faceBytes,
+        ),
       );
       log('Registered face for: $name (${embeddings.length} embeddings)');
       await _saveFaces();
