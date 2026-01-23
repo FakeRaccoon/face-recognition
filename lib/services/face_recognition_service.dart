@@ -345,7 +345,8 @@ class FaceRecognitionService {
       // Encode primary image for display
       final faceBytes = img.encodePng(primaryFaceImage);
 
-      _registeredFaces.add(
+      _registeredFaces.insert(
+        0,
         RegisteredFace(
           name: name,
           embeddings: embeddings,
@@ -567,7 +568,7 @@ class FaceRecognitionService {
   Future<void> _loadPrecomputedFaces() async {
     try {
       final String jsonString = await rootBundle.loadString(
-        'assets/data/profiles_data.json',
+        'assets/data/seeds_data.json',
       );
       final List<dynamic> decoded = jsonDecode(jsonString);
       final List<RegisteredFace> assetFaces = decoded
