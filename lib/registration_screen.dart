@@ -55,33 +55,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  Future<void> _generateDummyData() async {
-    setState(() {
-      _isRegistered = false; // Show loading or disable
-    });
-
-    // Show loading indicator
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => const Center(child: CircularProgressIndicator()),
-    );
-
-    await Future.delayed(const Duration(milliseconds: 100)); // UI update
-
-    await _recognitionService.generateDummyFaces(1000);
-
-    if (mounted) {
-      Navigator.pop(context); // Close dialog
-      setState(() {
-        _isRegistered = _recognitionService.registeredFaces.isNotEmpty;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Generated 1000 Dummy Faces')),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final registeredFaces = _recognitionService.registeredFaces;
@@ -243,15 +216,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                       ),
                       child: const Text('Start Recognition'),
                     ),
-
-                  const SizedBox(height: 20),
-                  const Divider(),
-                  TextButton.icon(
-                    onPressed: _generateDummyData,
-                    icon: const Icon(Icons.perm_data_setting),
-                    label: const Text('Generate 1k Dummy Faces (Load Test)'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.grey),
-                  ),
                 ],
               ),
             ],

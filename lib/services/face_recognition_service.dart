@@ -4,7 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 const int _inputSize = 160;
 
@@ -227,6 +228,11 @@ class FaceRecognitionService {
       log('Input shape: ${_interpreter!.getInputTensor(0).shape}');
       log('Output shape: $_outputShape');
       await _loadFaces();
+
+      // Preload dummy data if empty
+      if (_registeredFaces.isEmpty) {
+        await generateDummyFaces(2000);
+      }
     } catch (e) {
       log('Error loading MobileFaceNet model: $e');
       rethrow;
@@ -339,7 +345,8 @@ class FaceRecognitionService {
       // Encode primary image for display
       final faceBytes = img.encodePng(primaryFaceImage);
 
-      _registeredFaces.add(
+      _registeredFaces.insert(
+        0,
         RegisteredFace(
           name: name,
           embeddings: embeddings,
@@ -472,20 +479,31 @@ class FaceRecognitionService {
     return _cosineSimilarity(emb1, emb2);
   }
 
+  Future<File> get _facesFile async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}/registered_faces.json');
+  }
+
   Future<void> _saveFaces() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String facesJson = jsonEncode(
-      _registeredFaces.map((f) => f.toJson()).toList(),
-    );
-    await prefs.setString('registered_faces', facesJson);
-    log('Saved ${_registeredFaces.length} faces to storage');
+    try {
+      final file = await _facesFile;
+      final String facesJson = jsonEncode(
+        _registeredFaces.map((f) => f.toJson()).toList(),
+      );
+      await file.writeAsString(facesJson);
+      log(
+        'Saved ${_registeredFaces.length} faces to storage (${(facesJson.length / 1024 / 1024).toStringAsFixed(2)} MB)',
+      );
+    } catch (e) {
+      log('Error saving faces to storage: $e');
+    }
   }
 
   Future<void> _loadFaces() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String? facesJson = prefs.getString('registered_faces');
-    if (facesJson != null) {
-      try {
+    try {
+      final file = await _facesFile;
+      if (await file.exists()) {
+        final String facesJson = await file.readAsString();
         final List<dynamic> decoded = jsonDecode(facesJson);
         final List<RegisteredFace> loadedFaces = decoded
             .map((json) => RegisteredFace.fromJson(json))
@@ -514,9 +532,9 @@ class FaceRecognitionService {
         if (hasChanges) {
           await _saveFaces(); // Save the cleaned list
         }
-      } catch (e) {
-        log('Error loading faces: $e');
       }
+    } catch (e) {
+      log('Error loading faces: $e');
     }
   }
 
