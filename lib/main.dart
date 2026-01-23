@@ -63,6 +63,34 @@ class DetectedFaceInfo {
   });
 }
 
+class VerificationState {
+  final double? confidence;
+  final String? matchedName;
+  final bool isVerified;
+
+  const VerificationState({
+    this.confidence,
+    this.matchedName,
+    this.isVerified = false,
+  });
+
+  factory VerificationState.initial() => const VerificationState();
+
+  VerificationState copyWith({
+    double? confidence,
+    String? matchedName,
+    bool? isVerified,
+    bool clearConfidence = false,
+    bool clearMatchedName = false,
+  }) {
+    return VerificationState(
+      confidence: clearConfidence ? null : (confidence ?? this.confidence),
+      matchedName: clearMatchedName ? null : (matchedName ?? this.matchedName),
+      isVerified: isVerified ?? this.isVerified,
+    );
+  }
+}
+
 class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     with TickerProviderStateMixin {
   late AnimationController _animationController;
@@ -71,14 +99,13 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   bool _isRecognizing = false;
   int _cameraIndex = 0;
   DateTime? _lastRecognitionTime;
-  double? _currentConfidence;
 
   final _confidenceThreshold = 0.75;
 
   // Painting state
   // Painting state
   Rect? _targetBoundingBox; // The latest detection result
-  Rect? _currentBoundingBox; // The interpolated value for display
+  final ValueNotifier<Rect?> _boundingBoxNotifier = ValueNotifier(null);
   Size? _imageSize;
   InputImageRotation? _imageRotation;
   late Ticker _ticker; // Ticker for smooth animation
@@ -89,8 +116,9 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
   bool _isRecognitionReady = false;
 
   // Verification state
-  String? _consistentlyMatchedName;
-  bool _isVerificationComplete = false;
+  final ValueNotifier<VerificationState> _verificationNotifier = ValueNotifier(
+    VerificationState.initial(),
+  );
 
   // Adaptive debounce settings
   static const int _debounceActiveMs = 200; // Fast when matching
@@ -120,15 +148,15 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     // Initialize ticker for smooth interpolation
     _ticker = createTicker((elapsed) {
       if (_targetBoundingBox != null) {
-        if (_currentBoundingBox == null) {
-          _currentBoundingBox = _targetBoundingBox;
+        if (_boundingBoxNotifier.value == null) {
+          _boundingBoxNotifier.value = _targetBoundingBox;
           return;
         }
 
         // Linear interpolation with 0.15 factor for smooth following
         // We handle nullable rect lerp manually to be safe
         final target = _targetBoundingBox!;
-        final current = _currentBoundingBox!;
+        final current = _boundingBoxNotifier.value!;
 
         // Check distance to avoid unnecessary repaints
         final dist = (target.center - current.center).distance;
@@ -140,16 +168,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         final double lerpFactor = dist > 30.0 ? 0.7 : 0.2;
         final newRect = Rect.lerp(current, target, lerpFactor);
         if (newRect != null) {
-          setState(() {
-            _currentBoundingBox = newRect;
-          });
+          _boundingBoxNotifier.value = newRect;
         }
       } else {
         // If target is null (lost face), clear current
-        if (_currentBoundingBox != null) {
-          setState(() {
-            _currentBoundingBox = null;
-          });
+        if (_boundingBoxNotifier.value != null) {
+          _boundingBoxNotifier.value = null;
         }
       }
     });
@@ -234,8 +258,20 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       // ONLY update 'target'
       if (mounted) {
         // We still need to update metadata
-        _imageSize = inputImage.metadata?.size;
-        _imageRotation = inputImage.metadata?.rotation;
+        bool metadataChanged = false;
+        if (_imageSize != inputImage.metadata?.size ||
+            _imageRotation != inputImage.metadata?.rotation) {
+          _imageSize = inputImage.metadata?.size;
+          _imageRotation = inputImage.metadata?.rotation;
+          metadataChanged = true;
+        }
+
+        // Only trigger rebuild if metadata changed (e.g. first frame or rotation change)
+        // This ensures FullScreenCameraPreview builds the child with correct size/rotation
+        if (metadataChanged) {
+          setState(() {});
+        }
+
         _targetBoundingBox = primaryFace?.boundingBox;
       }
 
@@ -259,7 +295,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         if (_isRecognitionReady &&
             _recognitionService.registeredFaces.isNotEmpty) {
           // Adaptive debounce based on verification state
-          final debounceMs = _isVerificationComplete
+          final debounceMs = _verificationNotifier.value.isVerified
               ? _debounceVerifiedMs
               : _currentDebounceMs;
           final now = DateTime.now();
@@ -280,7 +316,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
 
           final face = primaryFace;
 
-          final croppedFace = _recognitionService.cropFace(
+          final croppedFace = await _recognitionService.cropFace(
             uprightImage,
             recognition.Rect(
               left: face.boundingBox.left,
@@ -294,58 +330,59 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
             final result = await _recognitionService.recognizeFace(croppedFace);
 
             if (result != null) {
-              if (mounted) {
-                setState(() {
-                  _currentConfidence = result.confidence;
-                });
-              }
-
               if (result.isMatch) {
                 if (result.confidence >= _confidenceThreshold) {
                   // Speed up recognition when actively matching
                   _currentDebounceMs = _debounceActiveMs;
-                  if (_consistentlyMatchedName == result.name) {
-                    // Same person continuing to match
-                    if (!_isVerificationComplete) {
-                      _isVerificationComplete = true;
+                  final currentState = _verificationNotifier.value;
 
-                      if (mounted) {
-                        setState(() {
-                          // Force UI update
-                        });
-                      }
+                  if (currentState.matchedName == result.name) {
+                    // Same person continuing to match
+                    if (!currentState.isVerified) {
+                      _verificationNotifier.value = currentState.copyWith(
+                        isVerified: true,
+                        confidence: result.confidence,
+                        matchedName: result.name,
+                      );
+                    } else {
+                      // Just update confidence
+                      _verificationNotifier.value = currentState.copyWith(
+                        confidence: result.confidence,
+                      );
                     }
                   } else {
                     // New person or first match
-                    _consistentlyMatchedName = result.name;
-                    _isVerificationComplete = true; // Immediate completion
-                    if (mounted) {
-                      setState(() {
-                        // Force UI update
-                      });
-                    }
+                    _verificationNotifier.value = VerificationState(
+                      isVerified: true,
+                      confidence: result.confidence,
+                      matchedName: result.name,
+                    );
                   }
                 } else {
                   _currentDebounceMs = _debounceIdleMs;
-                  _consistentlyMatchedName = null;
-                  _isVerificationComplete = false; // Reset
+                  _verificationNotifier.value = const VerificationState(
+                    isVerified: false,
+                    confidence: null,
+                    matchedName: null,
+                  );
                   _animationController.reset();
                 }
               } else {
                 _currentDebounceMs = _debounceIdleMs;
-                _consistentlyMatchedName = null;
-                _isVerificationComplete = false; // Reset
+                _verificationNotifier.value = const VerificationState(
+                  isVerified: false,
+                  confidence: null,
+                  matchedName: null,
+                );
                 _animationController.reset();
               }
             } else {
-              _consistentlyMatchedName = null;
-              _isVerificationComplete = false; // Reset
+              _verificationNotifier.value = const VerificationState(
+                isVerified: false,
+                confidence: null,
+                matchedName: null,
+              );
               _animationController.reset();
-              if (mounted) {
-                setState(() {
-                  _currentConfidence = null;
-                });
-              }
             }
 
             faceInfos.add(
@@ -360,14 +397,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           } else {
             faceInfos.add(DetectedFaceInfo(face: face));
 
-            _consistentlyMatchedName = null;
-            _isVerificationComplete = false; // Reset
+            _verificationNotifier.value = const VerificationState(
+              isVerified: false,
+              confidence: null,
+              matchedName: null,
+            );
             _animationController.reset();
-            if (mounted) {
-              setState(() {
-                _currentConfidence = null;
-              });
-            }
           }
           _isRecognizing = false;
         } else {
@@ -379,13 +414,12 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
         // Just clear target, ticker will clear current
         _targetBoundingBox = null;
 
-        setState(() {
-          _currentConfidence = null;
-          // _faceBoundingBox = null; // handled by target
-          // Reset verification state when face is lost
-          _isVerificationComplete = false;
-          _consistentlyMatchedName = null;
-        });
+        if (mounted) {
+          _targetBoundingBox = null;
+          // _boundingBoxNotifier.value = null; // Ticker handles null current if target is null
+
+          _verificationNotifier.value = VerificationState.initial();
+        }
 
         _animationController.reset();
       }
@@ -547,7 +581,8 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
     _animationController.dispose();
     _cameraController?.dispose();
     _faceDetector.close();
-
+    _boundingBoxNotifier.dispose();
+    _verificationNotifier.dispose();
     super.dispose();
   }
 
@@ -560,16 +595,7 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
       );
     }
 
-    // Status text logic replaced by visual indicators and bottom bar
-
-    Color statusColor = Colors.white;
-    if (_currentConfidence != null) {
-      if (_currentConfidence! >= _confidenceThreshold) {
-        statusColor = const Color(0xFF00E676);
-      } else {
-        statusColor = Colors.redAccent;
-      }
-    }
+    // Status logic moved to ValueListenableBuilder inside build
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -585,199 +611,263 @@ class _FaceDetectionScreenState extends State<FaceDetectionScreen>
           // Full screen camera preview
           FullScreenCameraPreview(
             controller: _cameraController!,
-            child:
-                _currentBoundingBox != null &&
-                    _imageSize != null &&
-                    _imageRotation != null
-                ? CustomPaint(
-                    painter: FacePainter(
-                      boundingBox: _currentBoundingBox!,
-                      imageSize: _imageSize!,
-                      rotation: _imageRotation!,
-                      cameraLensDirection:
-                          _cameraController!.description.lensDirection,
-                      color: statusColor,
-                    ),
+            child: (_imageSize != null && _imageRotation != null)
+                ? ValueListenableBuilder<VerificationState>(
+                    valueListenable: _verificationNotifier,
+                    builder: (context, verState, _) {
+                      Color statusColor = Colors.white;
+                      if (verState.confidence != null) {
+                        if (verState.confidence! >= _confidenceThreshold) {
+                          statusColor = const Color(0xFF00E676);
+                        } else {
+                          statusColor = Colors.redAccent;
+                        }
+                      }
+
+                      return ValueListenableBuilder<Rect?>(
+                        valueListenable: _boundingBoxNotifier,
+                        builder: (context, boundingBox, child) {
+                          if (boundingBox == null)
+                            return const SizedBox.shrink();
+                          return CustomPaint(
+                            painter: FacePainter(
+                              boundingBox: boundingBox,
+                              imageSize: _imageSize!,
+                              rotation: _imageRotation!,
+                              cameraLensDirection:
+                                  _cameraController!.description.lensDirection,
+                              color: statusColor,
+                            ),
+                          );
+                        },
+                      );
+                    },
                   )
                 : null,
           ),
 
-          // Overlay Texts
-          // Confidence Score Display (Top Right)
-          if (_currentConfidence != null)
-            Positioned(
-              top: 50, // Below AppBar
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.4), // Blend to UI
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.2),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.analytics_outlined,
-                      color: Colors.white.withOpacity(0.8),
-                      size: 14,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${(_currentConfidence! * 100).toStringAsFixed(1)}%',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.9),
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          // Use a ValueListenableBuilder for the overlays to avoid full rebuilds
+          ValueListenableBuilder<VerificationState>(
+            valueListenable: _verificationNotifier,
+            builder: (context, state, child) {
+              Color statusColor = Colors.white;
+              if (state.confidence != null) {
+                if (state.confidence! >= _confidenceThreshold) {
+                  statusColor = const Color(0xFF00E676);
+                } else {
+                  statusColor = Colors.redAccent;
+                }
+              }
 
-          Positioned(
-            bottom: 50,
-            left: 0,
-            right: 0,
-            child: Column(
-              children: [
-                if (_isVerificationComplete && _consistentlyMatchedName != null)
-                  Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 40),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    color: Colors.white,
-                    elevation: 4,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16.0,
-                        vertical: 12.0,
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 60,
-                            height: 60,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.grey.shade300,
-                                width: 1,
+              // We need to pass this color to the painter above.
+              // Nested builders are tricky for independent updates.
+              // But since color depends on verification state, and box depends on box notifier.
+              // We should probably nest them or simpler: just put CustomPaint here?
+              // No, we want bounding box to be 60fps independent of verification logic.
+              // Actually statusColor changes rarely (only when confidence crosses threshold).
+              // So maybe it's fine.
+              // BUT, the FacePainter needs to re-paint when Box changes.
+
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  // To update painter color without rebuilding the whole camera stack...
+                  // The painter is inside FullScreenCameraPreview child.
+                  // Let's modify the Structure slightly.
+                  // actually, let's keep the painter simple for now and maybe move the painter INTO this stack if possible?
+                  // No, it needs to be on top of camera.
+
+                  // Let's fix the painter color issue by just rebuilding the painter when verification status changes.
+                  // The frequent update is the BoundingBox.
+
+                  // Re-inserting the painter here, replacing the one above?
+                  // No, let's leave the painter logic for a moment and focus on overlays.
+                  if (state.confidence != null)
+                    Positioned(
+                      top: 50, // Below AppBar
+                      right: 20,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.4), // Blend to UI
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.2),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.analytics_outlined,
+                              color: Colors.white.withOpacity(0.8),
+                              size: 14,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '${(state.confidence! * 100).toStringAsFixed(1)}%',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.9),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
                               ),
-                              image: DecorationImage(
-                                fit: BoxFit.cover,
-                                image:
-                                    (() {
-                                          try {
-                                            final face = _recognitionService
-                                                .registeredFaces
-                                                .firstWhere(
-                                                  (f) =>
-                                                      f.name ==
-                                                      _consistentlyMatchedName,
-                                                );
-                                            if (face.faceBytes != null) {
-                                              return MemoryImage(
-                                                face.faceBytes!,
-                                              );
-                                            }
-                                          } catch (e) {
-                                            // Fallback
-                                          }
-                                          return const NetworkImage(
-                                            'https://via.placeholder.com/150',
-                                          );
-                                        })()
-                                        as ImageProvider,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  Positioned(
+                    bottom: 50,
+                    left: 0,
+                    right: 0,
+                    child: Column(
+                      children: [
+                        if (state.isVerified && state.matchedName != null)
+                          Card(
+                            margin: const EdgeInsets.symmetric(horizontal: 40),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            color: Colors.white,
+                            elevation: 4,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16.0,
+                                vertical: 12.0,
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 60,
+                                    height: 60,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.grey.shade300,
+                                        width: 1,
+                                      ),
+                                      image: DecorationImage(
+                                        fit: BoxFit.cover,
+                                        image:
+                                            (() {
+                                                  try {
+                                                    final face =
+                                                        _recognitionService
+                                                            .registeredFaces
+                                                            .firstWhere(
+                                                              (f) =>
+                                                                  f.name ==
+                                                                  state
+                                                                      .matchedName,
+                                                            );
+                                                    if (face.faceBytes !=
+                                                        null) {
+                                                      return MemoryImage(
+                                                        face.faceBytes!,
+                                                      );
+                                                    }
+                                                  } catch (e) {
+                                                    // Fallback
+                                                  }
+                                                  return const NetworkImage(
+                                                    'https://via.placeholder.com/150',
+                                                  );
+                                                })()
+                                                as ImageProvider,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          state.matchedName!.toUpperCase(),
+                                          style: const TextStyle(
+                                            color: Colors.black87,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 22,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}',
+                                          style: TextStyle(
+                                            color: Colors.grey.shade600,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _consistentlyMatchedName!.toUpperCase(),
-                                  style: const TextStyle(
-                                    color: Colors.black87,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 22,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')}',
-                                  style: TextStyle(
-                                    color: Colors.grey.shade600,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
+
+                        if (state.matchedName != null && !state.isVerified)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: CircularProgressIndicator(
+                              value: _animationController.value,
+                              color: const Color(0xFF00E676),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
 
-                if (_consistentlyMatchedName != null &&
-                    !_isVerificationComplete)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 20),
-                    child: CircularProgressIndicator(
-                      value: _animationController.value,
-                      color: const Color(0xFF00E676),
+                        // Bottom Status Bar
+                        Container(
+                          margin: const EdgeInsets.only(
+                            top: 20,
+                            left: 20,
+                            right: 20,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 16,
+                            horizontal: 24,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.8),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _recognitionService.registeredFaces.isEmpty
+                                ? 'Please register a face'
+                                : state.isVerified && state.matchedName != null
+                                ? 'Verified, Welcome!'
+                                : state.confidence != null
+                                ? state.confidence! >= _confidenceThreshold
+                                      ? 'Verifying...'
+                                      : 'Face Not Recognized'
+                                : 'Face Not Detected',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-
-                // Bottom Status Bar
-                Container(
-                  margin: const EdgeInsets.only(top: 20, left: 20, right: 20),
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 16,
-                    horizontal: 24,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _recognitionService.registeredFaces.isEmpty
-                        ? 'Please register a face'
-                        : _isVerificationComplete &&
-                              _consistentlyMatchedName != null
-                        ? 'Verified, Welcome!'
-                        : _currentConfidence != null
-                        ? _currentConfidence! >= _confidenceThreshold
-                              ? 'Verifying...'
-                              : 'Face Not Recognized'
-                        : 'Face Not Detected',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+                ],
+              );
+            },
           ),
         ],
       ),

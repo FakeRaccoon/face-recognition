@@ -225,7 +225,7 @@ class _MultiAngleRegistrationScreenState
 
       if (_faceBoundingBox == null) return;
 
-      final croppedFace = _recognitionService.cropFace(
+      final croppedFace = await _recognitionService.cropFace(
         uprightImage,
         recognition.Rect(
           left: _faceBoundingBox!.left,

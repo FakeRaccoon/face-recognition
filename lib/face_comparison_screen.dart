@@ -66,7 +66,7 @@ class _FaceComparisonScreenState extends State<FaceComparisonScreen> {
 
       if (largestFace == null) return;
 
-      final croppedFace = widget.recognitionService.cropFace(
+      final croppedFace = await widget.recognitionService.cropFace(
         image,
         Rect(
           left: largestFace.boundingBox.left,

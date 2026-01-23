@@ -8,6 +8,92 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const int _inputSize = 160;
 
+/// Message class for crop operation in isolate
+class _CropMessage {
+  final img.Image image;
+  final int left;
+  final int top;
+  final int width;
+  final int height;
+
+  _CropMessage({
+    required this.image,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+  });
+}
+
+/// Top-level function to crop face in isolate
+img.Image? _cropFaceIsolate(_CropMessage message) {
+  try {
+    return img.copyCrop(
+      message.image,
+      x: message.left,
+      y: message.top,
+      width: message.width,
+      height: message.height,
+    );
+  } catch (e) {
+    return null;
+  }
+}
+
+/// Message class for similarity comparison in isolate
+class _SimilarityMessage {
+  final List<double> embedding;
+  final List<RegisteredFaceData> registeredFaces;
+
+  _SimilarityMessage({
+    required this.embedding,
+    required this.registeredFaces,
+  });
+}
+
+/// Lightweight data class for isolate (no Uint8List)
+class RegisteredFaceData {
+  final String name;
+  final List<List<double>> embeddings;
+
+  RegisteredFaceData({required this.name, required this.embeddings});
+}
+
+/// Result from similarity comparison
+class _SimilarityResult {
+  final String? bestMatch;
+  final double bestSimilarity;
+
+  _SimilarityResult({this.bestMatch, required this.bestSimilarity});
+}
+
+/// Top-level function to compare embeddings in isolate
+_SimilarityResult _compareSimilarityIsolate(_SimilarityMessage message) {
+  String? bestMatch;
+  double bestSimilarity = -1;
+
+  for (final registered in message.registeredFaces) {
+    double maxSimilarityForPerson = -1;
+    for (final storedEmbedding in registered.embeddings) {
+      // Cosine similarity (embeddings are L2 normalized)
+      double dotProduct = 0;
+      for (int i = 0; i < message.embedding.length && i < storedEmbedding.length; i++) {
+        dotProduct += message.embedding[i] * storedEmbedding[i];
+      }
+      if (dotProduct > maxSimilarityForPerson) {
+        maxSimilarityForPerson = dotProduct;
+      }
+    }
+
+    if (maxSimilarityForPerson > bestSimilarity) {
+      bestSimilarity = maxSimilarityForPerson;
+      bestMatch = registered.name;
+    }
+  }
+
+  return _SimilarityResult(bestMatch: bestMatch, bestSimilarity: bestSimilarity);
+}
+
 /// Top-level function for isolate preprocessing.
 /// Resizes image and creates normalized Float32List tensor.
 /// Runs in background isolate to avoid UI jank.
@@ -285,45 +371,33 @@ class FaceRecognitionService {
       return null;
     }
 
-    String? bestMatch;
-    double bestSimilarity = -1;
+    // Convert to lightweight data for isolate
+    final facesData = _registeredFaces
+        .map((f) => RegisteredFaceData(name: f.name, embeddings: f.embeddings))
+        .toList();
 
-    for (final registered in _registeredFaces) {
-      // Compare against all stored embeddings, take max similarity
-      double maxSimilarityForPerson = -1;
-      for (final storedEmbedding in registered.embeddings) {
-        final similarity = _cosineSimilarity(embedding, storedEmbedding);
-        if (similarity > maxSimilarityForPerson) {
-          maxSimilarityForPerson = similarity;
-        }
-      }
-
-      log(
-        'Similarity with ${registered.name}: ${maxSimilarityForPerson.toStringAsFixed(3)} (from ${registered.embeddings.length} embeddings)',
-      );
-
-      if (maxSimilarityForPerson > bestSimilarity) {
-        bestSimilarity = maxSimilarityForPerson;
-        bestMatch = registered.name;
-      }
-    }
-
-    log(
-      'Best match: $bestMatch with similarity: ${bestSimilarity.toStringAsFixed(3)} (threshold: $_threshold)',
+    // Run similarity comparison in isolate to avoid UI jank
+    final result = await compute(
+      _compareSimilarityIsolate,
+      _SimilarityMessage(embedding: embedding, registeredFaces: facesData),
     );
 
-    if (bestMatch != null) {
+    log(
+      'Best match: ${result.bestMatch} with similarity: ${result.bestSimilarity.toStringAsFixed(3)} (threshold: $_threshold)',
+    );
+
+    if (result.bestMatch != null) {
       return RecognitionResult(
-        name: bestMatch,
-        confidence: bestSimilarity,
-        isMatch: bestSimilarity >= _threshold,
+        name: result.bestMatch!,
+        confidence: result.bestSimilarity,
+        isMatch: result.bestSimilarity >= _threshold,
       );
     }
 
     return null;
   }
 
-  img.Image? cropFace(img.Image fullImage, Rect boundingBox) {
+  Future<img.Image?> cropFace(img.Image fullImage, Rect boundingBox) async {
     try {
       // Add padding around the face (20%)
       const padding = 0.2;
@@ -362,12 +436,16 @@ class FaceRecognitionService {
         'Cropping face: ($left, $top) to ($right, $bottom) size: ${croppedWidth}x$croppedHeight',
       );
 
-      return img.copyCrop(
-        fullImage,
-        x: left,
-        y: top,
-        width: croppedWidth,
-        height: croppedHeight,
+      // Run crop in isolate to avoid UI jank
+      return await compute(
+        _cropFaceIsolate,
+        _CropMessage(
+          image: fullImage,
+          left: left,
+          top: top,
+          width: croppedWidth,
+          height: croppedHeight,
+        ),
       );
     } catch (e) {
       log('Error cropping face: $e');
