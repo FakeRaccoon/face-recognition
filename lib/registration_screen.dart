@@ -243,15 +243,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                       ),
                       child: const Text('Start Recognition'),
                     ),
-
-                  const SizedBox(height: 20),
-                  const Divider(),
-                  TextButton.icon(
-                    onPressed: _generateDummyData,
-                    icon: const Icon(Icons.perm_data_setting),
-                    label: const Text('Generate 1k Dummy Faces (Load Test)'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.grey),
-                  ),
                 ],
               ),
             ],

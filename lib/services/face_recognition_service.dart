@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const int _inputSize = 160;
@@ -226,7 +227,12 @@ class FaceRecognitionService {
       log('MobileFaceNet model loaded successfully');
       log('Input shape: ${_interpreter!.getInputTensor(0).shape}');
       log('Output shape: $_outputShape');
+
+      // Load persistent faces first
       await _loadFaces();
+
+      // Then load pre-computed/dummy faces from assets
+      await _loadPrecomputedFaces();
     } catch (e) {
       log('Error loading MobileFaceNet model: $e');
       rethrow;
@@ -556,6 +562,33 @@ class FaceRecognitionService {
     _registeredFaces.addAll(dummyFaces);
     await _saveFaces();
     log('Added ${dummyFaces.length} dummy faces to storage');
+  }
+
+  Future<void> _loadPrecomputedFaces() async {
+    try {
+      final String jsonString = await rootBundle.loadString(
+        'assets/data/profiles_data.json',
+      );
+      final List<dynamic> decoded = jsonDecode(jsonString);
+      final List<RegisteredFace> assetFaces = decoded
+          .map((json) => RegisteredFace.fromJson(json))
+          .toList();
+
+      int addedCount = 0;
+      for (final face in assetFaces) {
+        // Only add if not already present
+        if (!_registeredFaces.any((existing) => existing.name == face.name)) {
+          _registeredFaces.add(face);
+          addedCount++;
+        }
+      }
+
+      log(
+        'Loaded $addedCount pre-computed faces from assets (Total: ${_registeredFaces.length})',
+      );
+    } catch (e) {
+      log('Error loading pre-computed faces: $e');
+    }
   }
 }
 
