@@ -45,10 +45,7 @@ class _SimilarityMessage {
   final List<double> embedding;
   final List<RegisteredFaceData> registeredFaces;
 
-  _SimilarityMessage({
-    required this.embedding,
-    required this.registeredFaces,
-  });
+  _SimilarityMessage({required this.embedding, required this.registeredFaces});
 }
 
 /// Lightweight data class for isolate (no Uint8List)
@@ -77,7 +74,11 @@ _SimilarityResult _compareSimilarityIsolate(_SimilarityMessage message) {
     for (final storedEmbedding in registered.embeddings) {
       // Cosine similarity (embeddings are L2 normalized)
       double dotProduct = 0;
-      for (int i = 0; i < message.embedding.length && i < storedEmbedding.length; i++) {
+      for (
+        int i = 0;
+        i < message.embedding.length && i < storedEmbedding.length;
+        i++
+      ) {
         dotProduct += message.embedding[i] * storedEmbedding[i];
       }
       if (dotProduct > maxSimilarityForPerson) {
@@ -91,7 +92,10 @@ _SimilarityResult _compareSimilarityIsolate(_SimilarityMessage message) {
     }
   }
 
-  return _SimilarityResult(bestMatch: bestMatch, bestSimilarity: bestSimilarity);
+  return _SimilarityResult(
+    bestMatch: bestMatch,
+    bestSimilarity: bestSimilarity,
+  );
 }
 
 /// Top-level function for isolate preprocessing.
@@ -514,6 +518,44 @@ class FaceRecognitionService {
         log('Error loading faces: $e');
       }
     }
+  }
+
+  Future<void> generateDummyFaces(int count) async {
+    final random = Random();
+    final int embeddingSize = _embeddingSize;
+
+    log('Generating $count dummy faces with embedding size: $embeddingSize');
+
+    // Create a large batch of faces
+    final List<RegisteredFace> dummyFaces = [];
+
+    for (int i = 0; i < count; i++) {
+      final String name = 'Dummy User $i';
+      final List<List<double>> embeddings = [];
+
+      // Generate 5 random embeddings per user (simulating 5 angles)
+      for (int j = 0; j < 5; j++) {
+        // Generate random vector
+        final List<double> rawEmbedding = List.generate(
+          embeddingSize,
+          (_) => random.nextDouble() * 2 - 1, // Range [-1, 1]
+        );
+        // Normalize it
+        embeddings.add(_normalizeEmbedding(rawEmbedding));
+      }
+
+      dummyFaces.add(
+        RegisteredFace(
+          name: name,
+          embeddings: embeddings,
+          faceBytes: null, // No image data for dummy
+        ),
+      );
+    }
+
+    _registeredFaces.addAll(dummyFaces);
+    await _saveFaces();
+    log('Added ${dummyFaces.length} dummy faces to storage');
   }
 }
 
